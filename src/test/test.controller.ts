@@ -20,8 +20,6 @@ export class TestController {
 
   @Post('grupo')
   async testGrupo(@Body() body: { message: string }) {
-    console.log('WHATSAPP_GROUP_ID:', process.env.WHATSAPP_GROUP_ID);
-    console.log('WhatsApp ready:', whatsappService.isReady());
     const result = await whatsappService.sendGroupMessage(
       process.env.WHATSAPP_GROUP_ID,
       body.message,

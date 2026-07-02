@@ -34,27 +34,29 @@ function clearCookieToken(res: Response) {
 export class AuthController {
   constructor(private authService: AuthService) {}
 
-  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @Throttle({ global: { limit: 3, ttl: 60_000 } })
   @Public()
   @Post('register')
   async register(
     @Body() dto: RegisterDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.register(dto);
-    setCookieToken(res, result.token);
+    // El token viaja solo en la cookie httpOnly, nunca en el body:
+    // un XSS no puede leerlo y ningún cliente lo puede guardar mal.
+    const { token, ...result } = await this.authService.register(dto);
+    setCookieToken(res, token);
     return result;
   }
 
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Throttle({ global: { limit: 5, ttl: 60_000 } })
   @Public()
   @Post('login')
   async login(
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.login(dto);
-    setCookieToken(res, result.token);
+    const { token, ...result } = await this.authService.login(dto);
+    setCookieToken(res, token);
     return result;
   }
 
@@ -71,14 +73,14 @@ export class AuthController {
     return { message: 'Sesión cerrada' };
   }
 
-  @Throttle({ default: { limit: 3, ttl: 60_000 } })
+  @Throttle({ global: { limit: 3, ttl: 60_000 } })
   @Public()
   @Post('forgot-password')
   async forgotPassword(@Body() body: { username: string }) {
     return this.authService.forgotPassword(body.username);
   }
 
-  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Throttle({ global: { limit: 5, ttl: 60_000 } })
   @Public()
   @Post('reset-password')
   async resetPassword(@Body() body: { token: string; password: string }) {
