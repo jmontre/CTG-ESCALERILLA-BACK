@@ -12,6 +12,8 @@ import { CronModule } from './cron/cron.module';
 import { MasterModule } from './master/master.module';
 import { ReservationsModule } from './reservations/reservations.module';
 import { TestController } from './test/test.controller';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 import { CommonModule } from './common/common.module';
 
 @Module({
@@ -33,7 +35,7 @@ import { CommonModule } from './common/common.module';
     ReservationsModule,
     CommonModule,
   ],
-  controllers: [TestController],
-  providers: [{ provide: APP_GUARD, useClass: CfThrottlerGuard }],
+  controllers: [AppController, TestController],
+  providers: [AppService, { provide: APP_GUARD, useClass: CfThrottlerGuard }],
 })
 export class AppModule {}
