@@ -23,6 +23,18 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3000;
 
+  // Previews de Vercel: solo los del proyecto propio, no cualquier *.vercel.app.
+  // El sufijo del equipo (-jmontres-projects.vercel.app) es lo que no puede
+  // falsificar un tercero: los slugs de equipo en Vercel son únicos. Si el
+  // proyecto o el equipo se renombran, ajustar las env vars sin tocar código.
+  const vercelPreviewPrefix =
+    process.env.VERCEL_PREVIEW_PREFIX || 'ctg-escalerilla-front';
+  const vercelPreviewSuffix =
+    process.env.VERCEL_PREVIEW_SUFFIX || '-jmontres-projects.vercel.app';
+  const isOwnVercelPreview = (origin: string) =>
+    origin.startsWith(`https://${vercelPreviewPrefix}`) &&
+    origin.endsWith(vercelPreviewSuffix);
+
   app.enableCors({
     origin: (origin, callback) => {
       const allowed = [
@@ -33,12 +45,7 @@ async function bootstrap() {
         process.env.FRONTEND_URL,
       ].filter(Boolean);
       // Permitir requests sin origin (mobile apps, Postman, etc.)
-      // y todos los preview deployments de Vercel
-      if (
-        !origin ||
-        allowed.includes(origin) ||
-        origin.endsWith('.vercel.app')
-      ) {
+      if (!origin || allowed.includes(origin) || isOwnVercelPreview(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`CORS: origen no permitido: ${origin}`));
