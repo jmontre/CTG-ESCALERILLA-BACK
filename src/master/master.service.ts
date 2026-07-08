@@ -90,6 +90,16 @@ export class MasterService {
             },
           },
         },
+        // Semifinal/final no tienen group_id, así que no aparecen en groups.matches
+        matches: {
+          where: { round: { in: ['semifinal', 'final'] } },
+          include: {
+            player1: { select: MASTER_PUBLIC_PLAYER_SELECT },
+            player2: { select: MASTER_PUBLIC_PLAYER_SELECT },
+            winner: { select: MASTER_PUBLIC_PLAYER_SELECT },
+          },
+          orderBy: { created_at: 'asc' },
+        },
       },
       orderBy: { created_at: 'desc' },
     });
@@ -115,6 +125,16 @@ export class MasterService {
               orderBy: { created_at: 'asc' },
             },
           },
+        },
+        // Semifinal/final no tienen group_id, así que no aparecen en groups.matches
+        matches: {
+          where: { round: { in: ['semifinal', 'final'] } },
+          include: {
+            player1: { select: MASTER_PUBLIC_PLAYER_SELECT },
+            player2: { select: MASTER_PUBLIC_PLAYER_SELECT },
+            winner: { select: MASTER_PUBLIC_PLAYER_SELECT },
+          },
+          orderBy: { created_at: 'asc' },
         },
       },
     });
