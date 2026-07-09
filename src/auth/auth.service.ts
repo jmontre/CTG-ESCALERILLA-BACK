@@ -173,7 +173,10 @@ export class AuthService {
       .sendPasswordResetLink(user.player.name, user.player.phone, resetLink)
       .catch((err) => console.error('Error enviando WhatsApp reset:', err));
 
-    const maskedPhone = user.player.phone.replace(/(\d{3})\d+(\d{3})$/, '$1****$2');
+    const maskedPhone = user.player.phone.replace(
+      /(\d{3})\d+(\d{3})$/,
+      '$1****$2',
+    );
     this.appLogger.passwordReset(user.player.name, maskedPhone);
     return genericResponse;
   }

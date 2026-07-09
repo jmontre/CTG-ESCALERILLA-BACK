@@ -41,8 +41,10 @@ export class AuthController {
     @Body() dto: RegisterDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.register(dto);
-    setCookieToken(res, result.token);
+    // El token viaja solo en la cookie httpOnly, nunca en el body:
+    // un XSS no puede leerlo y ningún cliente lo puede guardar mal.
+    const { token, ...result } = await this.authService.register(dto);
+    setCookieToken(res, token);
     return result;
   }
 
@@ -53,8 +55,8 @@ export class AuthController {
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.authService.login(dto);
-    setCookieToken(res, result.token);
+    const { token, ...result } = await this.authService.login(dto);
+    setCookieToken(res, token);
     return result;
   }
 
