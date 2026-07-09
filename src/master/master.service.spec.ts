@@ -77,3 +77,37 @@ describe('MasterService.scheduleMatch', () => {
     });
   });
 });
+
+describe('MasterService.findByCategory', () => {
+  it('incluye los partidos de semifinal y final de la temporada, no solo los de grupo', async () => {
+    const prisma: any = {
+      masterSeason: { findFirst: jest.fn().mockResolvedValue({ id: 's1' }) },
+    };
+    const service = new MasterService(prisma);
+
+    await service.findByCategory('B');
+
+    const args = prisma.masterSeason.findFirst.mock.calls[0][0];
+    expect(args.include.matches).toBeDefined();
+    expect(args.include.matches.where.round.in).toEqual(
+      expect.arrayContaining(['semifinal', 'final']),
+    );
+  });
+});
+
+describe('MasterService.findAll', () => {
+  it('incluye los partidos de semifinal y final de cada temporada', async () => {
+    const prisma: any = {
+      masterSeason: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const service = new MasterService(prisma);
+
+    await service.findAll();
+
+    const args = prisma.masterSeason.findMany.mock.calls[0][0];
+    expect(args.include.matches).toBeDefined();
+    expect(args.include.matches.where.round.in).toEqual(
+      expect.arrayContaining(['semifinal', 'final']),
+    );
+  });
+});
