@@ -24,6 +24,52 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Emite las notificaciones de resultado confirmado de un partido
+   * (y de cambio de posiciones si hubo swap). Compartido entre el flujo
+   * normal (doble confirmación) y la resolución admin de disputas.
+   * La detección de swap y las posiciones nuevas las calcula el caller.
+   */
+  async notifyMatchResult(params: {
+    winnerId: string;
+    loserId: string;
+    winnerName: string;
+    loserName: string;
+    score: string;
+    positionsSwapped: boolean;
+    winnerPosition?: number | null;
+    loserPosition?: number | null;
+  }): Promise<void> {
+    await this.create(params.winnerId, {
+      type: 'result_confirmed',
+      title: 'Resultado confirmado',
+      body: `Victoria ${params.score} vs ${params.loserName}.`,
+      action_label: 'Ver historial',
+      action_path: '/historial',
+    });
+    await this.create(params.loserId, {
+      type: 'result_confirmed',
+      title: 'Resultado confirmado',
+      body: `Derrota ${params.score} vs ${params.winnerName}.`,
+      action_path: '/historial',
+    });
+    if (params.positionsSwapped) {
+      await this.create(params.winnerId, {
+        type: 'position_up',
+        title: '🚀 ¡Subiste posiciones!',
+        body: `Ahora eres #${params.winnerPosition} de la escalerilla.`,
+        action_label: 'Ver escalerilla',
+        action_path: '/escalerilla',
+      });
+      await this.create(params.loserId, {
+        type: 'position_down',
+        title: 'Bajaste de posición',
+        body: `Ahora eres #${params.loserPosition}. ¡A recuperarla!`,
+        action_path: '/escalerilla',
+      });
+    }
+  }
+
   private async playerIdFromUser(userId: string): Promise<string | null> {
     const player = await this.prisma.player.findUnique({
       where: { user_id: userId },

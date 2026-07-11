@@ -722,36 +722,17 @@ export class ChallengesService {
               msg += `\n\n_(Partido finalizado por retiro/lesión)_`;
             await whatsappService.sendGroupMessage(groupId, msg);
           }
-          await this.notificationsService.create(winnerId, {
-            type: 'result_confirmed',
-            title: 'Resultado confirmado',
-            body: `Victoria ${result1.score} vs ${loser.name}.`,
-            action_label: 'Ver historial',
-            action_path: '/historial',
+          // positionsSwapped: misma condición que ChallengeRulesService.processWin.
+          await this.notificationsService.notifyMatchResult({
+            winnerId,
+            loserId,
+            winnerName: winner.name,
+            loserName: loser.name,
+            score: result1.score,
+            positionsSwapped: oldWinnerPosition > oldLoserPosition,
+            winnerPosition: winner.position,
+            loserPosition: loser.position,
           });
-          await this.notificationsService.create(loserId, {
-            type: 'result_confirmed',
-            title: 'Resultado confirmado',
-            body: `Derrota ${result1.score} vs ${winner.name}.`,
-            action_path: '/historial',
-          });
-          // Notificar cambio de posiciones solo si efectivamente hubo swap
-          // (misma condición que ChallengeRulesService.processWin).
-          if (oldWinnerPosition > oldLoserPosition) {
-            await this.notificationsService.create(winnerId, {
-              type: 'position_up',
-              title: '🚀 ¡Subiste posiciones!',
-              body: `Ahora eres #${winner.position} de la escalerilla.`,
-              action_label: 'Ver escalerilla',
-              action_path: '/escalerilla',
-            });
-            await this.notificationsService.create(loserId, {
-              type: 'position_down',
-              title: 'Bajaste de posición',
-              body: `Ahora eres #${loser.position}. ¡A recuperarla!`,
-              action_path: '/escalerilla',
-            });
-          }
         });
 
         this.appLogger.challengeResult(

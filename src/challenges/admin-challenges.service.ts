@@ -96,34 +96,17 @@ export class AdminChallengesService {
         : updated.challenged.position;
 
     this.notifyAsync(async () => {
-      await this.notificationsService.create(winnerId, {
-        type: 'result_confirmed',
-        title: 'Resultado confirmado',
-        body: `Victoria ${score} vs ${loserName}.`,
-        action_label: 'Ver historial',
-        action_path: '/historial',
+      // positionsSwapped: misma condición que ChallengeRulesService.processWin.
+      await this.notificationsService.notifyMatchResult({
+        winnerId,
+        loserId,
+        winnerName,
+        loserName,
+        score,
+        positionsSwapped: oldWinnerPosition > oldLoserPosition,
+        winnerPosition,
+        loserPosition,
       });
-      await this.notificationsService.create(loserId, {
-        type: 'result_confirmed',
-        title: 'Resultado confirmado',
-        body: `Derrota ${score} vs ${winnerName}.`,
-        action_path: '/historial',
-      });
-      if (oldWinnerPosition > oldLoserPosition) {
-        await this.notificationsService.create(winnerId, {
-          type: 'position_up',
-          title: '🚀 ¡Subiste posiciones!',
-          body: `Ahora eres #${winnerPosition} de la escalerilla.`,
-          action_label: 'Ver escalerilla',
-          action_path: '/escalerilla',
-        });
-        await this.notificationsService.create(loserId, {
-          type: 'position_down',
-          title: 'Bajaste de posición',
-          body: `Ahora eres #${loserPosition}. ¡A recuperarla!`,
-          action_path: '/escalerilla',
-        });
-      }
     });
 
     return updated;

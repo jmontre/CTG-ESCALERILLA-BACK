@@ -47,6 +47,64 @@ describe('NotificationsService', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('notifyMatchResult sin swap emite solo 2 result_confirmed a los jugadores correctos', async () => {
+    await service.notifyMatchResult({
+      winnerId: 'winner-1',
+      loserId: 'loser-1',
+      winnerName: 'Ana',
+      loserName: 'Beto',
+      score: '6-4 6-2',
+      positionsSwapped: false,
+    });
+    expect(prismaMock.notification.create).toHaveBeenCalledTimes(2);
+    expect(prismaMock.notification.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        player_id: 'winner-1',
+        type: 'result_confirmed',
+        body: 'Victoria 6-4 6-2 vs Beto.',
+        action_path: '/historial',
+      }),
+    });
+    expect(prismaMock.notification.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        player_id: 'loser-1',
+        type: 'result_confirmed',
+        body: 'Derrota 6-4 6-2 vs Ana.',
+        action_path: '/historial',
+      }),
+    });
+  });
+
+  it('notifyMatchResult con swap emite 4: result_confirmed + position_up/down', async () => {
+    await service.notifyMatchResult({
+      winnerId: 'winner-1',
+      loserId: 'loser-1',
+      winnerName: 'Ana',
+      loserName: 'Beto',
+      score: '7-5 6-4',
+      positionsSwapped: true,
+      winnerPosition: 5,
+      loserPosition: 8,
+    });
+    expect(prismaMock.notification.create).toHaveBeenCalledTimes(4);
+    expect(prismaMock.notification.create).toHaveBeenNthCalledWith(3, {
+      data: expect.objectContaining({
+        player_id: 'winner-1',
+        type: 'position_up',
+        body: 'Ahora eres #5 de la escalerilla.',
+        action_path: '/escalerilla',
+      }),
+    });
+    expect(prismaMock.notification.create).toHaveBeenNthCalledWith(4, {
+      data: expect.objectContaining({
+        player_id: 'loser-1',
+        type: 'position_down',
+        body: 'Ahora eres #8. ¡A recuperarla!',
+        action_path: '/escalerilla',
+      }),
+    });
+  });
+
   it('findForUser devuelve [] si el usuario no tiene player', async () => {
     prismaMock.player.findUnique.mockResolvedValue(null);
     expect(await service.findForUser('user-x')).toEqual([]);
