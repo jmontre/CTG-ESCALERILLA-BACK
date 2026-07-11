@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ChallengeRulesService } from './challenge-rules.service';
 import { whatsappService } from '../notifications/whatsapp.service';
 import { emailService } from '../notifications/email.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { AppLogger } from '../common/app.logger';
 import { add } from 'date-fns';
 import { toChileDateStr, chileWeekBoundsFromStr } from '../common/dates';
@@ -35,6 +36,7 @@ export class ChallengesService {
     private prisma: PrismaService,
     private rules: ChallengeRulesService,
     private appLogger: AppLogger,
+    private notificationsService: NotificationsService,
   ) {}
 
   private sleep(ms: number) {
@@ -96,6 +98,13 @@ export class ChallengesService {
         challenged.name,
         challenged.email,
       );
+      await this.notificationsService.create(challenged.id, {
+        type: 'challenge_received',
+        title: '¡Tienes un desafío!',
+        body: `${challenger.name} te desafió. Tienes 24 horas para responder.`,
+        action_label: 'Responder',
+        action_path: '/fixture',
+      });
     });
     this.appLogger.challengeCreated(
       challenger.name,
@@ -174,6 +183,13 @@ export class ChallengesService {
         updated.challenged.name,
         updated.challenger.email,
       );
+      await this.notificationsService.create(updated.challenger.id, {
+        type: 'challenge_accepted',
+        title: 'Aceptaron tu desafío',
+        body: `${updated.challenged.name} aceptó. Tienen 5 días para jugar el partido.`,
+        action_label: 'Fijar fecha',
+        action_path: '/fixture',
+      });
     });
     this.appLogger.challengeAccepted(
       updated.challenger.name,
@@ -248,6 +264,12 @@ export class ChallengesService {
           `🎾 *Escalerilla CTG — W.O.*\n\n🏆 *${winner.name}* gana por W.O.\n${loser.name} rechazó el desafío.\n\n📈 Nuevas posiciones:\n  • ${winner.name}: #${winner.position}\n  • ${loser.name}: #${loser.position}`,
         );
       }
+      await this.notificationsService.create(challenge.challenger.id, {
+        type: 'challenge_rejected',
+        title: 'Desafío rechazado',
+        body: `${challenge.challenged.name} rechazó tu desafío.`,
+        action_path: '/fixture',
+      });
     });
 
     return { message: 'Desafío rechazado. El desafiante gana por W.O.' };
@@ -307,12 +329,24 @@ export class ChallengesService {
     if (!updated.challenger_result || !updated.challenged_result) {
       const other = isChallenger ? updated.challenged : updated.challenger;
       const current = isChallenger ? updated.challenger : updated.challenged;
+      const submittedResult = isChallenger
+        ? updated.challenger_result
+        : updated.challenged_result;
+      const submittedScore = (submittedResult as { score: string } | null)
+        ?.score;
       this.notifyAsync(async () => {
         if (other.phone)
           await whatsappService.sendMessage(
             other.phone,
             `🎾 *Club de Tenis Graneros*\n\n${current.name} ya ingresó el resultado.\n\n¡No olvides ingresar el tuyo también!`,
           );
+        await this.notificationsService.create(other.id, {
+          type: 'result_submitted',
+          title: 'Tu rival ingresó el resultado',
+          body: `${current.name} registró el partido ${submittedScore}. Confírmalo o dispútalo.`,
+          action_label: 'Confirmar',
+          action_path: '/fixture',
+        });
       });
     }
 
@@ -612,6 +646,15 @@ export class ChallengesService {
         winnerId === challenge.challenger_id
           ? challenge.challenged_id
           : challenge.challenger_id;
+      // Posiciones ANTES del corrimiento (processWin) — para detectar si hubo swap.
+      const oldWinnerPosition =
+        winnerId === challenge.challenger_id
+          ? challenge.challenger.position
+          : challenge.challenged.position;
+      const oldLoserPosition =
+        loserId === challenge.challenger_id
+          ? challenge.challenger.position
+          : challenge.challenged.position;
 
       try {
         await this.rules.processWin(challengeId, winnerId, loserId);
@@ -679,6 +722,36 @@ export class ChallengesService {
               msg += `\n\n_(Partido finalizado por retiro/lesión)_`;
             await whatsappService.sendGroupMessage(groupId, msg);
           }
+          await this.notificationsService.create(winnerId, {
+            type: 'result_confirmed',
+            title: 'Resultado confirmado',
+            body: `Victoria ${result1.score} vs ${loser.name}.`,
+            action_label: 'Ver historial',
+            action_path: '/historial',
+          });
+          await this.notificationsService.create(loserId, {
+            type: 'result_confirmed',
+            title: 'Resultado confirmado',
+            body: `Derrota ${result1.score} vs ${winner.name}.`,
+            action_path: '/historial',
+          });
+          // Notificar cambio de posiciones solo si efectivamente hubo swap
+          // (misma condición que ChallengeRulesService.processWin).
+          if (oldWinnerPosition > oldLoserPosition) {
+            await this.notificationsService.create(winnerId, {
+              type: 'position_up',
+              title: '🚀 ¡Subiste posiciones!',
+              body: `Ahora eres #${winner.position} de la escalerilla.`,
+              action_label: 'Ver escalerilla',
+              action_path: '/escalerilla',
+            });
+            await this.notificationsService.create(loserId, {
+              type: 'position_down',
+              title: 'Bajaste de posición',
+              body: `Ahora eres #${loser.position}. ¡A recuperarla!`,
+              action_path: '/escalerilla',
+            });
+          }
         });
 
         this.appLogger.challengeResult(
@@ -718,6 +791,22 @@ export class ChallengesService {
             message,
           );
         }
+        // Extra (no pedido explícitamente en el spec, pero mismo criterio que
+        // el resto de eventos de desafío): avisar a ambos que hay una disputa
+        // pendiente de resolución por un admin. No hay result_confirmed aquí
+        // porque el resultado todavía no está confirmado.
+        await this.notificationsService.create(challenge.challenger.id, {
+          type: 'result_disputed',
+          title: 'Resultados no coinciden',
+          body: `Un administrador revisará el partido vs ${challenge.challenged.name}.`,
+          action_path: '/fixture',
+        });
+        await this.notificationsService.create(challenge.challenged.id, {
+          type: 'result_disputed',
+          title: 'Resultados no coinciden',
+          body: `Un administrador revisará el partido vs ${challenge.challenger.name}.`,
+          action_path: '/fixture',
+        });
       });
       this.appLogger.challengeDisputed(
         challenge.challenger.name,
