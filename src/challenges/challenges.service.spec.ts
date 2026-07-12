@@ -40,7 +40,17 @@ describe('ChallengesService.accept', () => {
     };
     const appLogger: any = { challengeAccepted: jest.fn() };
     const rules: any = {};
-    return { service: new ChallengesService(prisma, rules, appLogger), prisma };
+    const notificationsService: any = { create: jest.fn() };
+    return {
+      service: new ChallengesService(
+        prisma,
+        rules,
+        appLogger,
+        notificationsService,
+      ),
+      prisma,
+      notificationsService,
+    };
   }
 
   it('falla si otro proceso ya cambió el estado (claim count 0)', async () => {

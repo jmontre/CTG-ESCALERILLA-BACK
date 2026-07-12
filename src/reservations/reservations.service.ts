@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { whatsappService } from '../notifications/whatsapp.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { AppLogger } from '../common/app.logger';
 import {
   nowInChile,
@@ -52,6 +53,7 @@ export class ReservationsService {
   constructor(
     private prisma: PrismaService,
     private appLogger: AppLogger,
+    private notificationsService: NotificationsService,
   ) {}
 
   /** Dispara notificaciones sin bloquear la respuesta HTTP. */
@@ -695,11 +697,10 @@ export class ReservationsService {
       throw e;
     }
 
-    // Notificación solo para socios normales (no profes)
-    if (!isProfe) {
-      this.notifyAsync(async () => {
-        if (!player.phone) return;
-        const fechaFormateada = formatReservationDate(reservationDate);
+    this.notifyAsync(async () => {
+      const fechaFormateada = formatReservationDate(reservationDate);
+      // WhatsApp solo para socios normales (no profes)
+      if (!isProfe && player.phone) {
         await whatsappService.sendMessage(
           player.phone,
           `📅 *Club de Tenis Graneros*\n\n` +
@@ -713,8 +714,15 @@ export class ReservationsService {
               : '') +
             (data.partner_name ? `\n🤝 Con: ${data.partner_name}` : ''),
         );
+      }
+      await this.notificationsService.create(player.id, {
+        type: 'reservation_done',
+        title: 'Reserva confirmada',
+        body: `${court.name} · ${fechaFormateada} · ${data.time_slot} hrs`,
+        action_label: 'Mis reservas',
+        action_path: '/mis-reservas',
       });
-    }
+    });
 
     this.appLogger.reservationCreated(
       player.name,
@@ -787,16 +795,22 @@ export class ReservationsService {
 
     if (!reservation.is_challenge) {
       this.notifyAsync(async () => {
-        if (!player.phone) return;
         const fechaFormateada = formatReservationDate(reservation.date);
-        await whatsappService.sendMessage(
-          player.phone,
-          `📅 *Club de Tenis Graneros*\n\n` +
-            `🚫 Tu reserva fue cancelada\n\n` +
-            `🎾 ${reservation.court?.name || 'Cancha'}\n` +
-            `📆 ${fechaFormateada}\n` +
-            `🕐 ${reservation.time_slot} hrs`,
-        );
+        if (player.phone) {
+          await whatsappService.sendMessage(
+            player.phone,
+            `📅 *Club de Tenis Graneros*\n\n` +
+              `🚫 Tu reserva fue cancelada\n\n` +
+              `🎾 ${reservation.court?.name || 'Cancha'}\n` +
+              `📆 ${fechaFormateada}\n` +
+              `🕐 ${reservation.time_slot} hrs`,
+          );
+        }
+        await this.notificationsService.create(player.id, {
+          type: 'reservation_cancelled',
+          title: 'Reserva cancelada',
+          body: `Cancelaste tu reserva del ${fechaFormateada} · ${reservation.court?.name || 'Cancha'} · ${reservation.time_slot} hrs.`,
+        });
       });
     }
 
@@ -926,21 +940,29 @@ export class ReservationsService {
     }
 
     this.notifyAsync(async () => {
-      if (!player.phone) return;
       const fechaFormateada = formatReservationDate(reservationDate);
-      await whatsappService.sendMessage(
-        player.phone,
-        `📅 *Club de Tenis Graneros*\n\n` +
-          `✏️ Tu reserva fue modificada\n\n` +
-          `🎾 ${court.name}\n` +
-          `📆 ${fechaFormateada}\n` +
-          `🕐 ${data.time_slot} hrs` +
-          (isHighDemand ? `\n🔥 Turno de alta demanda` : '') +
-          (data.has_guest
-            ? `\n👤 Visita: ${data.guest_name || 'Externa'}`
-            : '') +
-          (data.partner_name ? `\n🤝 Con: ${data.partner_name}` : ''),
-      );
+      if (player.phone) {
+        await whatsappService.sendMessage(
+          player.phone,
+          `📅 *Club de Tenis Graneros*\n\n` +
+            `✏️ Tu reserva fue modificada\n\n` +
+            `🎾 ${court.name}\n` +
+            `📆 ${fechaFormateada}\n` +
+            `🕐 ${data.time_slot} hrs` +
+            (isHighDemand ? `\n🔥 Turno de alta demanda` : '') +
+            (data.has_guest
+              ? `\n👤 Visita: ${data.guest_name || 'Externa'}`
+              : '') +
+            (data.partner_name ? `\n🤝 Con: ${data.partner_name}` : ''),
+        );
+      }
+      await this.notificationsService.create(player.id, {
+        type: 'reservation_modified',
+        title: 'Reserva modificada',
+        body: `Tu reserva quedó para el ${fechaFormateada} · ${court.name} · ${data.time_slot} hrs.`,
+        action_label: 'Mis reservas',
+        action_path: '/mis-reservas',
+      });
     });
 
     this.appLogger.reservationCreated(
@@ -992,19 +1014,30 @@ export class ReservationsService {
         const player = await this.prisma.player.findUnique({
           where: { id: reservation.player_id },
         });
-        if (!player?.phone) return;
+        if (!player) return;
         const fechaFormateada = formatReservationDate(reservation.date);
-        await whatsappService.sendMessage(
-          player.phone,
-          `📅 *Club de Tenis Graneros*\n\n` +
-            `🚫 Tu reserva fue cancelada por el administrador\n\n` +
-            `🎾 ${reservation.court?.name || 'Cancha'}\n` +
-            `📆 ${fechaFormateada}\n` +
-            `🕐 ${reservation.time_slot} hrs` +
-            (reason && reason !== 'Cancelada por administrador'
-              ? `\n📝 Motivo: ${reason}`
-              : ''),
-        );
+        const hasCustomReason =
+          !!reason && reason !== 'Cancelada por administrador';
+        if (player.phone) {
+          await whatsappService.sendMessage(
+            player.phone,
+            `📅 *Club de Tenis Graneros*\n\n` +
+              `🚫 Tu reserva fue cancelada por el administrador\n\n` +
+              `🎾 ${reservation.court?.name || 'Cancha'}\n` +
+              `📆 ${fechaFormateada}\n` +
+              `🕐 ${reservation.time_slot} hrs` +
+              (hasCustomReason ? `\n📝 Motivo: ${reason}` : ''),
+          );
+        }
+        await this.notificationsService.create(player.id, {
+          type: 'reservation_cancelled',
+          title: 'Reserva cancelada por administración',
+          body:
+            `Tu reserva del ${fechaFormateada} · ${reservation.court?.name || 'Cancha'} · ${reservation.time_slot} hrs fue cancelada.` +
+            (hasCustomReason ? ` Motivo: ${reason}` : ''),
+          action_label: 'Reservar de nuevo',
+          action_path: '/reservar',
+        });
       });
     }
 

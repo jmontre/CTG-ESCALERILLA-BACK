@@ -55,6 +55,7 @@ model Player {
   master_matches_p2    MasterMatch[]       @relation("master_player2")
   master_matches_won   MasterMatch[]       @relation("master_winner")
   reservations         Reservation[]
+  notifications        Notification[]
 
   @@map("players")
 }
@@ -262,4 +263,22 @@ model LightChargeConfig {
 
   @@unique([date])
   @@map("light_charge_configs")
+}
+
+model Notification {
+  id           String   @id @default(uuid())
+  player_id    String
+  type         String
+  title        String
+  body         String
+  read         Boolean  @default(false)
+  action_label String?
+  action_path  String?
+  created_at   DateTime @default(now())
+
+  player Player @relation(fields: [player_id], references: [id], onDelete: Cascade)
+
+  @@index([player_id, read])
+  @@index([player_id, created_at])
+  @@map("notifications")
 }

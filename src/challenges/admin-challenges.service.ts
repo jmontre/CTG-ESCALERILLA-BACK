@@ -5,13 +5,22 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChallengeRulesService } from './challenge-rules.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class AdminChallengesService {
   constructor(
     private prisma: PrismaService,
     private rules: ChallengeRulesService,
+    private notificationsService: NotificationsService,
   ) {}
+
+  /** Dispara notificaciones sin bloquear la respuesta HTTP (igual que ChallengesService). */
+  private notifyAsync(task: () => Promise<void>) {
+    void task().catch((e) =>
+      console.error('⚠️ Error notificaciones (async):', e),
+    );
+  }
 
   async resolveChallenge(challengeId: string, winnerId: string, score: string) {
     const challenge = await this.prisma.challenge.findUnique({
@@ -32,6 +41,15 @@ export class AdminChallengesService {
       winnerId === challenge.challenger_id
         ? challenge.challenged_id
         : challenge.challenger_id;
+    // Posiciones ANTES del corrimiento (processWin) — para detectar si hubo swap.
+    const oldWinnerPosition =
+      winnerId === challenge.challenger_id
+        ? challenge.challenger.position
+        : challenge.challenged.position;
+    const oldLoserPosition =
+      loserId === challenge.challenger_id
+        ? challenge.challenger.position
+        : challenge.challenged.position;
 
     // Misma lógica que el flujo normal: corrimiento + historial + inmunidad/vulnerabilidad + stats
     await this.rules.processWin(challengeId, winnerId, loserId);
@@ -58,6 +76,37 @@ export class AdminChallengesService {
         cancelled_at: new Date(),
         cancel_reason: 'Partido completado',
       },
+    });
+
+    const winnerName =
+      winnerId === updated.challenger_id
+        ? updated.challenger.name
+        : updated.challenged.name;
+    const loserName =
+      loserId === updated.challenger_id
+        ? updated.challenger.name
+        : updated.challenged.name;
+    const winnerPosition =
+      winnerId === updated.challenger_id
+        ? updated.challenger.position
+        : updated.challenged.position;
+    const loserPosition =
+      loserId === updated.challenger_id
+        ? updated.challenger.position
+        : updated.challenged.position;
+
+    this.notifyAsync(async () => {
+      // positionsSwapped: misma condición que ChallengeRulesService.processWin.
+      await this.notificationsService.notifyMatchResult({
+        winnerId,
+        loserId,
+        winnerName,
+        loserName,
+        score,
+        positionsSwapped: oldWinnerPosition > oldLoserPosition,
+        winnerPosition,
+        loserPosition,
+      });
     });
 
     return updated;
