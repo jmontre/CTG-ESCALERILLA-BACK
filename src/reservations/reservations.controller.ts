@@ -9,11 +9,13 @@ import {
   Query,
   Req,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { ReservationsService } from './reservations.service';
 import { Admin } from '../auth/admin.decorator';
 import { Public } from '../auth/public.decorator';
+import { OptionalJwtAuthGuard } from '../auth/optional-jwt-auth.guard';
 import { CreateReservationDto } from './dto/create-reservation.dto';
 
 @Controller('reservations')
@@ -57,10 +59,15 @@ export class ReservationsController {
   }
 
   @Public()
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('availability')
-  getAvailability(@Query('date') date: string) {
+  getAvailability(
+    @Query('date') date: string,
+    @Req() req: Request & { user?: { sub: string } },
+  ) {
     if (!date) throw new UnauthorizedException('Debes indicar una fecha.');
-    return this.reservationsService.getAvailability(date);
+    // Solo requests autenticadas ven partner_name/guest_name (PII de terceros).
+    return this.reservationsService.getAvailability(date, !!req.user);
   }
 
   @Get('season')
