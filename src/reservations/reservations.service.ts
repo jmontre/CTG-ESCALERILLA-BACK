@@ -97,7 +97,10 @@ export class ReservationsService {
 
   // ── Availability ────────────────────────────────────────────────────────────
 
-  async getAvailability(date: string) {
+  // `includeNames` solo debe ser true para requests autenticadas: expone
+  // partner_name/guest_name (PII de terceros). El endpoint es @Public, así que
+  // los visitantes anónimos reciben false y no ven con quién juega cada socio.
+  async getAvailability(date: string, includeNames = false) {
     const season = await this.getSeason();
     const highDemandSlots = HIGH_DEMAND_SLOTS[season];
     const courts = await this.getCourts();
@@ -142,8 +145,14 @@ export class ReservationsService {
                     ? `Escuela ${existing.school_name}`
                     : existing.player.name,
                   has_guest: existing.has_guest,
-                  // guest_name y partner_name omitidos: PII de terceros en endpoint @Public.
-                  // Ver quién ocupa el slot no requiere saber con quién juega.
+                  // partner_name/guest_name solo para requests autenticadas
+                  // (PII de terceros); anónimos ven el slot ocupado sin nombres.
+                  ...(includeNames
+                    ? {
+                        partner_name: existing.partner_name ?? null,
+                        guest_name: existing.guest_name ?? null,
+                      }
+                    : {}),
                   is_challenge: existing.is_challenge || false,
                   is_master: existing.is_master || false,
                   master_category:
