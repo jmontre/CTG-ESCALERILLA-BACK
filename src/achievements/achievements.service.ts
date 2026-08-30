@@ -4,6 +4,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { toChileDateStr, chileWeekBoundsFromStr } from '../common/dates';
 import {
+  categoryOf as ladderCategoryOf,
+  categoryRank,
+  CategoryScheme,
+} from '../common/ladder';
+import {
   ACHIEVEMENTS,
   ACHIEVEMENTS_BY_CODE,
   AchievementDef,
@@ -15,17 +20,17 @@ import {
   isSuperTiebreakWin,
 } from './score';
 
-/** Rangos de categoría de la escalerilla (los mismos que usa el Master). */
-export function categoryOf(position: number | null | undefined): string | null {
-  if (!position || position < 1 || position > 48) return null;
-  if (position <= 12) return 'A';
-  if (position <= 24) return 'B';
-  if (position <= 36) return 'C';
-  return 'D';
+/**
+ * Categoría de una posición. Reexportado desde common/ladder.ts, que es la
+ * definición única de los rangos (y sabe distinguir el esquema histórico de
+ * 4 categorías del actual de 3).
+ */
+export function categoryOf(
+  position: number | null | undefined,
+  scheme?: CategoryScheme,
+): string | null {
+  return ladderCategoryOf(position, scheme);
 }
-
-/** 'A' es la más alta: un número menor significa mejor categoría. */
-const CATEGORY_RANK: Record<string, number> = { A: 1, B: 2, C: 3, D: 4 };
 
 interface MatchRow {
   id: string;
@@ -332,7 +337,7 @@ export class AchievementsService {
 
     const startCat = categoryOf(start);
     const nowCat = categoryOf(position);
-    if (startCat && nowCat && CATEGORY_RANK[nowCat] < CATEGORY_RANK[startCat]) {
+    if (startCat && nowCat && categoryRank(nowCat) < categoryRank(startCat)) {
       await this.grant(playerId, 'ascenso', {
         seasonSlug: season.slug,
         context: { desde: startCat, hasta: nowCat },

@@ -77,14 +77,20 @@ describe('AchievementsService', () => {
   });
 
   describe('categoryOf', () => {
-    it('mapea los rangos de la escalerilla', () => {
+    // Los rangos en sí se prueban en common/ladder.spec.ts; acá solo que el
+    // servicio delegue en esa definición y no tenga una copia propia.
+    it('usa los rangos vigentes (3 categorías, sin D)', () => {
       expect(categoryOf(1)).toBe('A');
-      expect(categoryOf(12)).toBe('A');
-      expect(categoryOf(13)).toBe('B');
-      expect(categoryOf(36)).toBe('C');
-      expect(categoryOf(48)).toBe('D');
+      expect(categoryOf(14)).toBe('A');
+      expect(categoryOf(15)).toBe('B');
+      expect(categoryOf(29)).toBe('C');
+      expect(categoryOf(48)).toBe('C');
       expect(categoryOf(null)).toBeNull();
       expect(categoryOf(1001)).toBeNull(); // admin
+    });
+
+    it('respeta el esquema histórico cuando se lo piden', () => {
+      expect(categoryOf(48, 'legacy4')).toBe('D');
     });
   });
 
