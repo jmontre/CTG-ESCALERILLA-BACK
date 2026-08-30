@@ -44,6 +44,15 @@ const DEFAULT_PASSWORD = 'ctg2026';
 /**
  * Nombres de la planilla que no coinciden con la base y no se pueden deducir.
  * Cada alias fue confirmado con el club: no inventar entradas acá.
+ *
+ * Casos que el matcheo resuelve solo y el script reporta como "a revisar"
+ * (confirmados con el club en ago-2026, no hace falta volver a preguntarlos):
+ *   - "Rodrigo Becerra" (planilla) = "Carlos Becerra" (base): misma persona,
+ *     mismo correo, registrada con otro nombre de pila.
+ *   - "Juan Pablo urtubia" = "JP Urtubia" y "Juan Pablo Morales" = "JP
+ *     Morales": el club los registró por sus iniciales.
+ *   - "Mateo Carvacho" = "Mateo Carbacho" y "Gincarlo Stipo" = "Giancarlo
+ *     Stipo": erratas de tipeo en el apellido.
  */
 const ALIASES: Record<string, string> = {
   kako: 'Marco Roman',
