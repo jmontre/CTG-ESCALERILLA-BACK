@@ -4,10 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  AchievementsService,
-  categoryOf,
-} from '../achievements/achievements.service';
+import { AchievementsService } from '../achievements/achievements.service';
+import { categoryOf, CategoryScheme } from '../common/ladder';
 import { ACHIEVEMENTS_BY_CODE } from '../achievements/achievements.catalog';
 
 /**
@@ -45,7 +43,11 @@ export class SeasonsService {
    * Idempotente: reejecutarla sobre la misma temporada refresca las posiciones
    * iniciales sin duplicar filas.
    */
-  async openSeason(slug: string, name: string) {
+  async openSeason(
+    slug: string,
+    name: string,
+    categoryScheme: CategoryScheme = 'v2',
+  ) {
     const active = await this.prisma.season.findFirst({
       where: { status: 'active' },
     });
@@ -57,8 +59,8 @@ export class SeasonsService {
 
     const season = await this.prisma.season.upsert({
       where: { slug },
-      update: { name, status: 'active' },
-      create: { slug, name, status: 'active' },
+      update: { name, status: 'active', category_scheme: categoryScheme },
+      create: { slug, name, status: 'active', category_scheme: categoryScheme },
     });
 
     const players = await this.prisma.player.findMany({
@@ -73,13 +75,13 @@ export class SeasonsService {
         },
         update: {
           start_position: p.position,
-          category: categoryOf(p.position),
+          category: categoryOf(p.position, categoryScheme),
         },
         create: {
           season_id: season.id,
           player_id: p.id,
           start_position: p.position,
-          category: categoryOf(p.position),
+          category: categoryOf(p.position, categoryScheme),
         },
       });
     }
@@ -97,6 +99,11 @@ export class SeasonsService {
   async closeSeason(slug: string, masterSeasonName: string) {
     const season = await this.prisma.season.findUnique({ where: { slug } });
     if (!season) throw new NotFoundException(`Temporada "${slug}" no existe`);
+
+    // Se congela con los rangos con los que SE JUGÓ esa temporada, no con los
+    // vigentes: el 1er semestre 2026 tuvo 4 categorías y sus campeones de D
+    // quedarían archivados en C si se usaran los rangos nuevos.
+    const scheme = (season.category_scheme ?? 'v2') as CategoryScheme;
 
     const players = await this.prisma.player.findMany({
       where: this.activeLadderWhere(),
@@ -119,7 +126,7 @@ export class SeasonsService {
           wins: p.wins,
           losses: p.losses,
           total_matches: p.total_matches,
-          category: categoryOf(p.position),
+          category: categoryOf(p.position, scheme),
         },
         create: {
           season_id: season.id,
@@ -131,7 +138,7 @@ export class SeasonsService {
           wins: p.wins,
           losses: p.losses,
           total_matches: p.total_matches,
-          category: categoryOf(p.position),
+          category: categoryOf(p.position, scheme),
         },
       });
     }

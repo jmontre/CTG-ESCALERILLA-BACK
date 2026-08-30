@@ -415,7 +415,12 @@ async function main() {
     },
   });
 
-  const opened = await seasons.openSeason(NEW_SEASON_SLUG, NEW_SEASON_NAME);
+  // La temporada nueva ya corre con 3 categorías (A 1-14, B 15-28, C 29+).
+  const opened = await seasons.openSeason(
+    NEW_SEASON_SLUG,
+    NEW_SEASON_NAME,
+    'v2',
+  );
   console.log(
     `\nTemporada "${opened.season.slug}" abierta con ${opened.players} posiciones iniciales registradas.`,
   );

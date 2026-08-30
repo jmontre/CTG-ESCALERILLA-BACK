@@ -71,7 +71,7 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     code: 'ascenso',
     name: 'Ascenso',
     description:
-      'Subir de categoría durante el semestre (de D a C, C a B o B a A).',
+      'Subir de categoría durante el semestre (de C a B o de B a A).',
     emoji: '⬆️',
     group: 'escalerilla',
     scope: 'season',

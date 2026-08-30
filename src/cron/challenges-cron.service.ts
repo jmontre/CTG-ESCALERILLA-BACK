@@ -7,6 +7,7 @@ import { whatsappService } from '../notifications/whatsapp.service';
 import { AppLogger } from '../common/app.logger';
 import { nowInChile } from '../common/dates';
 import { AchievementsService } from '../achievements/achievements.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 // Cada 6 horas: 00:00, 06:00, 12:00, 18:00
 const EVERY_6_HOURS = '0 0,6,12,18 * * *';
@@ -29,6 +30,7 @@ export class ChallengesCronService {
     private rules: ChallengeRulesService,
     private appLogger: AppLogger,
     private achievements: AchievementsService,
+    private notifications: NotificationsService,
   ) {}
 
   @Cron(EVERY_6_HOURS)
@@ -60,19 +62,60 @@ export class ChallengesCronService {
       include: { challenger: true, challenged: true },
     });
 
+    const scheme = await this.activeCategoryScheme();
+
     for (const challenge of expired) {
       this.logger.warn(
         `⏱️  Desafío expirado (no aceptado): ${challenge.challenger.name} vs ${challenge.challenged.name}`,
       );
 
-      await this.rules.processWin(
+      // Un desafiante que viene de ganar por W.O. necesita 3 partidos jugados
+      // de verdad para que otro le cuente. Si no los tiene, el desafío se
+      // anula: no se mueve nadie y al ausente tampoco le suma.
+      const claimable = await this.rules.canClaimWalkover(
+        challenge.challenger_id,
+      );
+      if (!claimable) {
+        await this.prisma.challenge.update({
+          where: { id: challenge.id },
+          data: {
+            status: 'cancelled',
+            resolved_at: now,
+            final_score: 'W.O. no válido (3 partidos pendientes)',
+          },
+        });
+        this.logger.log(
+          `↩️  W.O. anulado: ${challenge.challenger.name} aún no juega 3 partidos desde su último W.O.`,
+        );
+        await this.notifications.create(challenge.challenger_id, {
+          type: 'challenge_cancelled',
+          title: 'Desafío anulado',
+          body:
+            `${challenge.challenged.name} no respondió, pero tu W.O. no cuenta: ` +
+            `necesitas jugar 3 partidos desde el último.`,
+          action_path: '/fixture',
+        });
+        continue;
+      }
+
+      // No responder tiene el mismo efecto que rechazar: el ausente baja al
+      // puesto del desafiante y los del medio suben uno.
+      await this.rules.processDecline(
         challenge.id,
         challenge.challenger_id,
         challenge.challenged_id,
+        'challenge_not_answered',
       );
       await this.rules.applyPostMatchStatus(
         challenge.challenger_id,
         challenge.challenged_id,
+      );
+      await this.rules.recordWalkoverWin(challenge.challenger_id);
+
+      // Además, castigo por ausencias repetidas (contador propio).
+      const demotedTo = await this.rules.applyNoResponsePenalty(
+        challenge.challenged_id,
+        scheme,
       );
 
       await this.prisma.challenge.update({
@@ -94,10 +137,25 @@ export class ChallengesCronService {
           await whatsappService.sendGroupMessage(
             groupId,
             `🎾 *Escalerilla CTG — W.O. automático*\n\n` +
-              `🏆 *${winner.name}* gana por W.O.\n` +
               `${loser.name} no respondió el desafío a tiempo.\n\n` +
-              `📈 ${winner.name}: #${winner.position}`,
+              `📈 ${winner.name}: #${winner.position}\n` +
+              `📉 ${loser.name}: #${loser.position}` +
+              (demotedTo
+                ? `\n\n⚠️ Segunda ausencia seguida: baja al último de su categoría.`
+                : ''),
           );
+        }
+        if (loser) {
+          await this.notifications.create(loser.id, {
+            type: 'position_down',
+            title: demotedTo
+              ? 'Bajaste al final de tu categoría'
+              : 'No respondiste a tiempo',
+            body: demotedTo
+              ? `Ausencias seguidas: bajaste al final de tu categoría, ahora eres #${loser.position}. Juega un partido y el contador vuelve a cero.`
+              : `No respondiste el desafío de ${challenge.challenger.name}. Ahora eres #${loser.position}.`,
+            action_path: '/fixture',
+          });
         }
       } catch (err) {
         this.logger.error('⚠️ Error notificando grupo:', err);
@@ -111,6 +169,16 @@ export class ChallengesCronService {
     }
 
     return expired.length;
+  }
+
+  /** Esquema de categorías de la temporada abierta (ver common/ladder.ts). */
+  private async activeCategoryScheme(): Promise<'legacy4' | 'v2'> {
+    const season = await this.prisma.season.findFirst({
+      where: { status: 'active' },
+      orderBy: { started_at: 'desc' },
+      select: { category_scheme: true },
+    });
+    return season?.category_scheme === 'legacy4' ? 'legacy4' : 'v2';
   }
 
   private async handleNotPlayed(now: Date): Promise<number> {
