@@ -103,6 +103,10 @@ async function main() {
         name: SEASON_NAME,
         status: 'active',
         started_at: SEASON_STARTED_AT,
+        // Este semestre se jugó con 4 categorías sobre 48 puestos. Queda
+        // marcado para que el histórico no se reetiquete cuando cambien los
+        // rangos: si no, los campeones de D quedarían archivados en C.
+        category_scheme: 'legacy4',
       },
     });
     console.log(

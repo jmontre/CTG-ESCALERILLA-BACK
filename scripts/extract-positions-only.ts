@@ -15,25 +15,33 @@ async function main() {
     },
     where: {
       user: {
-        username: { not: 'admin' } // Excluir admin
-      }
-    }
+        username: { not: 'admin' }, // Excluir admin
+      },
+    },
   });
 
-  console.log('┌──────┬─────────────────────────────┬─────────────────────────┐');
-  console.log('│ Pos  │ Nombre                      │ Username                │');
-  console.log('├──────┼─────────────────────────────┼─────────────────────────┤');
+  console.log(
+    '┌──────┬─────────────────────────────┬─────────────────────────┐',
+  );
+  console.log(
+    '│ Pos  │ Nombre                      │ Username                │',
+  );
+  console.log(
+    '├──────┼─────────────────────────────┼─────────────────────────┤',
+  );
 
   const mapping: { [key: string]: number } = {};
 
   for (const player of players) {
     mapping[player.user.username] = player.position;
     console.log(
-      `│ ${player.position.toString().padStart(4, ' ')} │ ${player.name.padEnd(27)} │ ${player.user.username.padEnd(23)} │`
+      `│ ${player.position.toString().padStart(4, ' ')} │ ${player.name.padEnd(27)} │ ${player.user.username.padEnd(23)} │`,
     );
   }
 
-  console.log('└──────┴─────────────────────────────┴─────────────────────────┘');
+  console.log(
+    '└──────┴─────────────────────────────┴─────────────────────────┘',
+  );
 
   // Generar script TypeScript listo para copiar/pegar
   const scriptContent = `import { PrismaClient } from '@prisma/client';

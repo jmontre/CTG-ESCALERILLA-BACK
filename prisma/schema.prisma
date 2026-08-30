@@ -46,6 +46,17 @@ model Player {
   // Server-side a propósito: localStorage se pierde al cambiar de dispositivo.
   last_summary_seen String?
 
+  // No-respuestas acumuladas (desafíos que dejó vencer sin contestar). A la 2ª
+  // baja al último de su categoría, y de ahí en adelante una categoría por vez.
+  // Se reinicia al jugar un partido de verdad: el castigo apunta a quien se
+  // ausenta seguido, no a quien falló una vez hace meses.
+  no_response_count Int @default(0)
+
+  // Última victoria por W.O. Para que otro W.O. le cuente necesita 3 partidos
+  // jugados de verdad después de esta fecha; así nadie escala a punta de
+  // rivales que no contestan.
+  last_wo_win_at DateTime?
+
   user     User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
   parent   Player? @relation("family", fields: [parent_id], references: [id])
   children Player[] @relation("family")
@@ -297,6 +308,12 @@ model Season {
   status     String    @default("active") // active | closed
   started_at DateTime  @default(now())
   closed_at  DateTime?
+
+  /// Rangos de categoría con los que se jugó (ver common/ladder.ts).
+  /// "legacy4" = 4 categorías sobre 48 puestos, hasta el 1er semestre 2026.
+  /// "v2" = 3 categorías sin tope, desde el 2do semestre 2026.
+  /// Guardarlo evita reetiquetar el histórico al cambiar los rangos.
+  category_scheme String @default("v2")
 
   standings SeasonStanding[]
 

@@ -26,7 +26,9 @@ async function main() {
       if (newPhone.startsWith('9')) {
         newPhone = '+56' + newPhone;
       } else {
-        console.warn(`⚠️  ${player.name}: ${player.phone} (formato sospechoso)`);
+        console.warn(
+          `⚠️  ${player.name}: ${player.phone} (formato sospechoso)`,
+        );
         continue;
       }
 

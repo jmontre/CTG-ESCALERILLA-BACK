@@ -3,7 +3,9 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🔄 Actualizando posiciones de la Escalerilla 2025 2º Semestre...\n');
+  console.log(
+    '🔄 Actualizando posiciones de la Escalerilla 2025 2º Semestre...\n',
+  );
 
   // Nuevas posiciones según la imagen
   const newPositions = [
@@ -68,10 +70,10 @@ async function main() {
   }
 
   console.log(`\n✅ ${updated} posiciones actualizadas`);
-  
+
   if (notFound.length > 0) {
     console.log(`\n⚠️  ${notFound.length} jugadores NO encontrados:`);
-    notFound.forEach(name => console.log(`   - ${name}`));
+    notFound.forEach((name) => console.log(`   - ${name}`));
   }
 }
 

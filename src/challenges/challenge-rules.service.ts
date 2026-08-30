@@ -2,28 +2,29 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Player } from '@prisma/client';
 import { add } from 'date-fns';
+import {
+  getLevel,
+  categoryOf,
+  categoryBounds,
+  nextCategoryDown,
+} from '../common/ladder';
+
+/** Partidos jugados de verdad que se exigen para que otro W.O. cuente. */
+const MATCHES_TO_REVALIDATE_WO = 3;
+
+/** No-respuestas antes del primer castigo de categoría. */
+const NO_RESPONSES_BEFORE_DEMOTION = 2;
 
 @Injectable()
 export class ChallengeRulesService {
   constructor(private prisma: PrismaService) {}
 
   /**
-   * HELPER: Calcular nivel según posición
+   * HELPER: nivel según posición. Delega en common/ladder.ts, que es la
+   * definición única (antes había una copia acá y otra en el frontend).
    */
   getLevel(position: number): number {
-    if (position === 1) return 1; // Nivel 1: pos 1
-    if (position <= 4) return 2; // Nivel 2: pos 2-4
-    if (position <= 8) return 3; // Nivel 3: pos 5-8
-    if (position <= 12) return 4; // Nivel 4: pos 9-12
-    if (position <= 15) return 5; // Nivel 5: pos 13-15
-    if (position <= 19) return 6; // Nivel 6: pos 16-19
-    if (position <= 24) return 7; // Nivel 7: pos 20-24
-    if (position <= 27) return 8; // Nivel 8: pos 25-27
-    if (position <= 31) return 9; // Nivel 9: pos 28-31
-    if (position <= 36) return 10; // Nivel 10: pos 32-36
-    if (position <= 39) return 11; // Nivel 11: pos 37-39
-    if (position <= 43) return 12; // Nivel 12: pos 40-43
-    return 13; // Nivel 13: pos 44-48
+    return getLevel(position);
   }
 
   /**
@@ -360,6 +361,244 @@ export class ChallengeRulesService {
         total_matches: { increment: 1 },
         losses: { increment: 1 },
       },
+    });
+
+    // Un partido jugado de verdad limpia el historial de ausencias de ambos:
+    // el castigo apunta a quien se ausenta seguido, no a quien falló una vez.
+    await this.prisma.player.updateMany({
+      where: { id: { in: [winnerId, loserId] } },
+      data: { no_response_count: 0 },
+    });
+  }
+
+  // ───────────────── Desaires: rechazo y no-respuesta ─────────────────
+
+  /**
+   * Movimiento cuando el desafiado se desaira (rechaza o deja vencer el plazo).
+   *
+   * El que desaira BAJA al puesto del desafiante y todos los del medio suben
+   * uno para tapar el hueco. Ojo: no es lo mismo que ganar un partido — el
+   * desafiante sube un solo puesto, no salta al del rival.
+   *
+   *   #10 desafía al #6 y el #6 desaira:
+   *     #6 Beltrán → #10   ·   #7,#8,#9 suben uno   ·   #10 desafiante → #9
+   *
+   * Todo dentro de una transacción, con pivot a 9999 para no colisionar
+   * (las posiciones son únicas por convención, sin constraint que lo imponga).
+   */
+  async processDecline(
+    challengeId: string,
+    challengerId: string,
+    declinerId: string,
+    reason: 'challenge_rejected' | 'challenge_not_answered',
+  ): Promise<void> {
+    const challenger = await this.prisma.player.findUnique({
+      where: { id: challengerId },
+    });
+    const decliner = await this.prisma.player.findUnique({
+      where: { id: declinerId },
+    });
+    if (!challenger || !decliner) {
+      throw new BadRequestException('Jugador no encontrado');
+    }
+    if (challenger.position == null || decliner.position == null) {
+      return; // alguno está fuera de la escalerilla: nada que mover
+    }
+    // Si el que desaira ya estaba más abajo, no hay nada que corregir.
+    if (decliner.position >= challenger.position) return;
+
+    const targetPosition = challenger.position;
+    const vacated = decliner.position;
+
+    // Todos los que quedan entre el hueco y el desafiante (ambos incluidos)
+    // suben un puesto. Orden ascendente: cada uno entra al hueco que dejó el
+    // anterior.
+    const shifting = await this.prisma.player.findMany({
+      where: { position: { gt: vacated, lte: targetPosition } },
+      orderBy: { position: 'asc' },
+    });
+
+    await this.prisma.$transaction([
+      ...shifting.map((p) =>
+        this.prisma.rankingHistory.create({
+          data: {
+            player_id: p.id,
+            old_position: p.position,
+            position: p.position! - 1,
+            reason,
+          },
+        }),
+      ),
+      this.prisma.rankingHistory.create({
+        data: {
+          player_id: decliner.id,
+          old_position: vacated,
+          position: targetPosition,
+          reason,
+        },
+      }),
+      // Pivot: libera el puesto del que desaira antes de correr al resto.
+      this.prisma.player.update({
+        where: { id: decliner.id },
+        data: { position: 9999 },
+      }),
+      ...shifting.map((p) =>
+        this.prisma.player.update({
+          where: { id: p.id },
+          data: { position: p.position! - 1 },
+        }),
+      ),
+      this.prisma.player.update({
+        where: { id: decliner.id },
+        data: { position: targetPosition },
+      }),
+    ]);
+
+    console.log(
+      `📍 ${decliner.name} desairó (${reason}): #${vacated} → #${targetPosition}, ` +
+        `${shifting.length} jugador(es) suben uno`,
+    );
+  }
+
+  /**
+   * Castigo por ausencias repetidas. A la 2ª no-respuesta el jugador cae al
+   * último puesto de su categoría; de ahí en adelante, cada no-respuesta lo
+   * manda al último de la categoría siguiente, hasta el fondo de la escalerilla.
+   *
+   * Devuelve la posición nueva, o null si todavía no corresponde castigo.
+   */
+  async applyNoResponsePenalty(
+    playerId: string,
+    scheme: 'legacy4' | 'v2' = 'v2',
+  ): Promise<number | null> {
+    const player = await this.prisma.player.update({
+      where: { id: playerId },
+      data: { no_response_count: { increment: 1 } },
+    });
+    if (
+      player.position == null ||
+      player.no_response_count < NO_RESPONSES_BEFORE_DEMOTION
+    ) {
+      return null;
+    }
+
+    // La 2ª no-respuesta cae al fondo de su categoría; cada una siguiente baja
+    // una categoría más.
+    const extraDrops = player.no_response_count - NO_RESPONSES_BEFORE_DEMOTION;
+    let category = categoryOf(player.position, scheme);
+    if (!category) return null;
+    for (let i = 0; i < extraDrops; i++) {
+      const below = nextCategoryDown(category, scheme);
+      if (!below) break; // ya está en la última categoría
+      category = below;
+    }
+
+    const bounds = categoryBounds(category, scheme);
+    if (!bounds) return null;
+
+    const lastActive = await this.prisma.player.findFirst({
+      where: { position: { gte: 1, lt: 1000 } },
+      orderBy: { position: 'desc' },
+      select: { position: true },
+    });
+    const ladderEnd = lastActive?.position ?? player.position;
+    // El fondo de la categoría, sin pasarse del final real de la escalerilla.
+    const target = Math.min(bounds.to ?? ladderEnd, ladderEnd);
+
+    if (target <= player.position) return null; // ya estaba igual o más abajo
+
+    await this.dropTo(
+      player.id,
+      player.position,
+      target,
+      'no_response_penalty',
+    );
+    console.log(
+      `⬇️  ${player.name}: ${player.no_response_count}ª no-respuesta → ` +
+        `último de categoría ${category} (#${target})`,
+    );
+    return target;
+  }
+
+  /**
+   * Baja a un jugador hasta `target`, subiendo un puesto a todos los que
+   * quedan en el medio. Mismo patrón de pivot que processDecline.
+   */
+  private async dropTo(
+    playerId: string,
+    from: number,
+    to: number,
+    reason: string,
+  ): Promise<void> {
+    const shifting = await this.prisma.player.findMany({
+      where: { position: { gt: from, lte: to } },
+      orderBy: { position: 'asc' },
+    });
+
+    await this.prisma.$transaction([
+      ...shifting.map((p) =>
+        this.prisma.rankingHistory.create({
+          data: {
+            player_id: p.id,
+            old_position: p.position,
+            position: p.position! - 1,
+            reason,
+          },
+        }),
+      ),
+      this.prisma.rankingHistory.create({
+        data: { player_id: playerId, old_position: from, position: to, reason },
+      }),
+      this.prisma.player.update({
+        where: { id: playerId },
+        data: { position: 9999 },
+      }),
+      ...shifting.map((p) =>
+        this.prisma.player.update({
+          where: { id: p.id },
+          data: { position: p.position! - 1 },
+        }),
+      ),
+      this.prisma.player.update({
+        where: { id: playerId },
+        data: { position: to },
+      }),
+    ]);
+  }
+
+  // ────────────────────────── Validez del W.O. ──────────────────────────
+
+  /**
+   * ¿Le cuenta a este desafiante un W.O.?
+   *
+   * Después de ganar uno necesita 3 partidos jugados de verdad para que otro
+   * valga; si no, nadie escalaría a punta de rivales que no contestan. Cuando
+   * no cuenta, el desafío se anula y no se mueve nadie (tampoco se castiga al
+   * ausente).
+   */
+  async canClaimWalkover(challengerId: string): Promise<boolean> {
+    const player = await this.prisma.player.findUnique({
+      where: { id: challengerId },
+      select: { last_wo_win_at: true },
+    });
+    if (!player?.last_wo_win_at) return true; // nunca ganó por W.O.
+
+    const playedSince = await this.prisma.challenge.count({
+      where: {
+        status: 'completed',
+        winner_id: { not: null },
+        played_at: { gt: player.last_wo_win_at },
+        OR: [{ challenger_id: challengerId }, { challenged_id: challengerId }],
+      },
+    });
+    return playedSince >= MATCHES_TO_REVALIDATE_WO;
+  }
+
+  /** Marca que este jugador acaba de ganar por W.O. (arranca su contador). */
+  async recordWalkoverWin(challengerId: string): Promise<void> {
+    await this.prisma.player.update({
+      where: { id: challengerId },
+      data: { last_wo_win_at: new Date() },
     });
   }
 }
