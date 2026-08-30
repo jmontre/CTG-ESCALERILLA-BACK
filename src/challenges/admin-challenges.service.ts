@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { ChallengeRulesService } from './challenge-rules.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AchievementsService } from '../achievements/achievements.service';
 
 @Injectable()
 export class AdminChallengesService {
@@ -13,6 +14,7 @@ export class AdminChallengesService {
     private prisma: PrismaService,
     private rules: ChallengeRulesService,
     private notificationsService: NotificationsService,
+    private achievements: AchievementsService,
   ) {}
 
   /** Dispara notificaciones sin bloquear la respuesta HTTP (igual que ChallengesService). */
@@ -55,6 +57,15 @@ export class AdminChallengesService {
     await this.rules.processWin(challengeId, winnerId, loserId);
     await this.rules.applyPostMatchStatus(winnerId, loserId);
     await this.rules.updateStats(winnerId, loserId);
+
+    // Logros: mismo trato que el flujo normal de doble confirmación.
+    await this.achievements.evaluateAfterChallenge({
+      winnerId,
+      loserId,
+      score,
+      oldWinnerPosition,
+      oldLoserPosition,
+    });
 
     const updated = await this.prisma.challenge.update({
       where: { id: challengeId },

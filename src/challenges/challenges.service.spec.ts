@@ -41,12 +41,14 @@ describe('ChallengesService.accept', () => {
     const appLogger: any = { challengeAccepted: jest.fn() };
     const rules: any = {};
     const notificationsService: any = { create: jest.fn() };
+    const achievements: any = { evaluateAfterChallenge: jest.fn() };
     return {
       service: new ChallengesService(
         prisma,
         rules,
         appLogger,
         notificationsService,
+        achievements,
       ),
       prisma,
       notificationsService,

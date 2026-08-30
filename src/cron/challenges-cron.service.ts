@@ -6,6 +6,7 @@ import { ChallengeRulesService } from '../challenges/challenge-rules.service';
 import { whatsappService } from '../notifications/whatsapp.service';
 import { AppLogger } from '../common/app.logger';
 import { nowInChile } from '../common/dates';
+import { AchievementsService } from '../achievements/achievements.service';
 
 // Cada 6 horas: 00:00, 06:00, 12:00, 18:00
 const EVERY_6_HOURS = '0 0,6,12,18 * * *';
@@ -27,6 +28,7 @@ export class ChallengesCronService {
     private prisma: PrismaService,
     private rules: ChallengeRulesService,
     private appLogger: AppLogger,
+    private achievements: AchievementsService,
   ) {}
 
   @Cron(EVERY_6_HOURS)
@@ -200,6 +202,21 @@ export class ChallengesCronService {
       await this.rules.processWin(challenge.id, winnerId, loserId);
       await this.rules.applyPostMatchStatus(winnerId, loserId);
       await this.rules.updateStats(winnerId, loserId);
+
+      // Logros: el resultado quedó validado, cuenta como partido jugado.
+      await this.achievements.evaluateAfterChallenge({
+        winnerId,
+        loserId,
+        score: confirmedResult.score,
+        oldWinnerPosition:
+          challenge.challenger_id === winnerId
+            ? challenge.challenger.position
+            : challenge.challenged.position,
+        oldLoserPosition:
+          challenge.challenger_id === loserId
+            ? challenge.challenger.position
+            : challenge.challenged.position,
+      });
 
       await this.prisma.challenge.update({
         where: { id: challenge.id },
