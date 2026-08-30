@@ -42,6 +42,9 @@ model Player {
   created_at       DateTime  @default(now())
   extra_high_demand_slots   Int       @default(0)
   school_names  String[]  @default([])
+  // Slug de la temporada cuyo resumen de cierre ya vio (el modal no se repite).
+  // Server-side a propósito: localStorage se pierde al cambiar de dispositivo.
+  last_summary_seen String?
 
   user     User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
   parent   Player? @relation("family", fields: [parent_id], references: [id])
@@ -56,6 +59,8 @@ model Player {
   master_matches_won   MasterMatch[]       @relation("master_winner")
   reservations         Reservation[]
   notifications        Notification[]
+  achievements         PlayerAchievement[]
+  season_standings     SeasonStanding[]
 
   @@map("players")
 }
@@ -281,4 +286,61 @@ model Notification {
   @@index([player_id, read])
   @@index([player_id, created_at])
   @@map("notifications")
+}
+
+/// Temporada de la escalerilla (semestre). El cierre congela un SeasonStanding
+/// por jugador; la apertura registra su posición inicial.
+model Season {
+  id         String    @id @default(uuid())
+  slug       String    @unique // "2026-1"
+  name       String // "Escalerilla 2026 · 1er Semestre"
+  status     String    @default("active") // active | closed
+  started_at DateTime  @default(now())
+  closed_at  DateTime?
+
+  standings SeasonStanding[]
+
+  @@map("seasons")
+}
+
+/// Foto del jugador en una temporada: posición inicial, posición final,
+/// récord congelado y resultado del cuadro Master de esa temporada.
+model SeasonStanding {
+  id             String  @id @default(uuid())
+  season_id      String
+  player_id      String
+  start_position Int?
+  final_position Int?
+  wins           Int     @default(0)
+  losses         Int     @default(0)
+  total_matches  Int     @default(0)
+  category       String? // A | B | C | D al cierre
+  master_result  String? // champion | finalist | semifinalist
+
+  season Season @relation(fields: [season_id], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [player_id], references: [id], onDelete: Cascade)
+
+  @@unique([season_id, player_id])
+  @@index([player_id])
+  @@map("season_standings")
+}
+
+/// Logro desbloqueado. El catálogo vive en código (achievements.catalog.ts):
+/// agregar un logro nuevo no requiere migración.
+/// `season_slug` usa el centinela "global" en vez de NULL porque en Postgres
+/// los NULL son distintos entre sí y el @@unique no impediría duplicados.
+model PlayerAchievement {
+  id          String   @id @default(uuid())
+  player_id   String
+  code        String
+  season_slug String   @default("global")
+  context     Json?
+  unlocked_at DateTime @default(now())
+  seen        Boolean  @default(false)
+
+  player Player @relation(fields: [player_id], references: [id], onDelete: Cascade)
+
+  @@unique([player_id, code, season_slug])
+  @@index([player_id, seen])
+  @@map("player_achievements")
 }
