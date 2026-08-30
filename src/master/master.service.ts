@@ -641,6 +641,14 @@ export class MasterService {
       await this.checkAndGenerateFinal(match.season_id);
     }
 
+    // La final cierra la temporada. Antes quedaba colgada en estado 'final'.
+    if (match.round === 'final') {
+      await this.prisma.masterSeason.update({
+        where: { id: match.season_id },
+        data: { status: 'completed' },
+      });
+    }
+
     // Notificar jugadores (fire-and-forget)
     const isRetirement = score?.includes('Retiro') || score === 'W.O.';
     const seasonId = match.season_id;

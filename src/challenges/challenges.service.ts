@@ -9,6 +9,7 @@ import { ChallengeRulesService } from './challenge-rules.service';
 import { whatsappService } from '../notifications/whatsapp.service';
 import { emailService } from '../notifications/email.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AchievementsService } from '../achievements/achievements.service';
 import { AppLogger } from '../common/app.logger';
 import { add } from 'date-fns';
 import { toChileDateStr, chileWeekBoundsFromStr } from '../common/dates';
@@ -37,6 +38,7 @@ export class ChallengesService {
     private rules: ChallengeRulesService,
     private appLogger: AppLogger,
     private notificationsService: NotificationsService,
+    private achievements: AchievementsService,
   ) {}
 
   private sleep(ms: number) {
@@ -660,6 +662,15 @@ export class ChallengesService {
         await this.rules.processWin(challengeId, winnerId, loserId);
         await this.rules.applyPostMatchStatus(winnerId, loserId);
         await this.rules.updateStats(winnerId, loserId);
+
+        // Logros: después del corrimiento, porque varios leen la posición nueva.
+        await this.achievements.evaluateAfterChallenge({
+          winnerId,
+          loserId,
+          score: result1.score,
+          oldWinnerPosition,
+          oldLoserPosition,
+        });
 
         await this.prisma.challenge.update({
           where: { id: challengeId },

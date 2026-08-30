@@ -4,6 +4,7 @@ import { ReservationsController } from './reservations.controller';
 import { ReservationsService } from './reservations.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AchievementsModule } from '../achievements/achievements.module';
 import { jwtModuleOptions } from '../auth/jwt.config';
 
 @Module({
@@ -11,6 +12,7 @@ import { jwtModuleOptions } from '../auth/jwt.config';
     PrismaModule,
     JwtModule.registerAsync(jwtModuleOptions),
     NotificationsModule,
+    AchievementsModule,
   ],
   controllers: [ReservationsController],
   providers: [ReservationsService],
