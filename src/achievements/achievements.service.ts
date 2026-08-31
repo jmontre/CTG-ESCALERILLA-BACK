@@ -97,7 +97,10 @@ export class AchievementsService {
 
     if (!opts.silent) {
       await this.notifications.create(playerId, {
-        type: 'achievement_unlocked',
+        // 'achievement' es el tipo que el frontend conoce (NOTIF_META). Con uno
+        // desconocido la notificación se descarta al renderizar y nunca llega
+        // a la campana.
+        type: 'achievement',
         title: `${def.emoji} ¡Logro desbloqueado!`,
         body: `${def.name} — ${def.description}`,
         action_label: 'Ver mis logros',
