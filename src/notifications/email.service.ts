@@ -14,11 +14,36 @@ export class EmailService {
 
   private fromEmail = 'CTG Escalerilla <escalerilla@clubdetenisgraneros.cl>';
 
+  /**
+   * Los correos salen solo en producción, o cuando se piden explícitamente con
+   * EMAIL_ENABLED=true.
+   *
+   * Sin esta guarda, cualquier script corrido a mano contra la base de dev le
+   * manda correos DE VERDAD a los socios: Prisma carga `.env` dentro de
+   * `process.env` al inicializarse, y ese archivo trae la API key real de
+   * Resend aunque el DATABASE_URL apunte a dev. Ya pasó una vez — una prueba
+   * end-to-end avisó a tres socios de desafíos que no existían.
+   *
+   * Mismo patrón que WHATSAPP_ENABLED en whatsapp.service.ts.
+   */
+  private get enabled(): boolean {
+    if (process.env.EMAIL_ENABLED === 'true') return true;
+    if (process.env.EMAIL_ENABLED === 'false') return false;
+    const isProd = process.env.NODE_ENV === 'production';
+    if (!isProd) {
+      console.log(
+        '📭 Email desactivado (NODE_ENV != production). Usa EMAIL_ENABLED=true para forzarlo.',
+      );
+    }
+    return isProd;
+  }
+
   async sendChallengeNotification(
     challengerName: string,
     challengedName: string,
     challengedEmail: string,
   ) {
+    if (!this.enabled) return;
     try {
       await this.resend.emails.send({
         from: this.fromEmail,
@@ -68,6 +93,7 @@ export class EmailService {
     challengedName: string,
     challengerEmail: string,
   ) {
+    if (!this.enabled) return;
     try {
       await this.resend.emails.send({
         from: this.fromEmail,
@@ -124,6 +150,7 @@ export class EmailService {
     challengedName: string,
     challengerEmail: string,
   ) {
+    if (!this.enabled) return;
     try {
       await this.resend.emails.send({
         from: this.fromEmail,
@@ -175,6 +202,7 @@ export class EmailService {
     won: boolean,
     newPosition: number,
   ) {
+    if (!this.enabled) return;
     try {
       const subject = won
         ? '🏆 ¡Ganaste el partido!'
