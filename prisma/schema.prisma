@@ -42,6 +42,20 @@ model Player {
   created_at       DateTime  @default(now())
   extra_high_demand_slots   Int       @default(0)
   school_names  String[]  @default([])
+  // Slug de la temporada cuyo resumen de cierre ya vio (el modal no se repite).
+  // Server-side a propósito: localStorage se pierde al cambiar de dispositivo.
+  last_summary_seen String?
+
+  // No-respuestas acumuladas (desafíos que dejó vencer sin contestar). A la 2ª
+  // baja al último de su categoría, y de ahí en adelante una categoría por vez.
+  // Se reinicia al jugar un partido de verdad: el castigo apunta a quien se
+  // ausenta seguido, no a quien falló una vez hace meses.
+  no_response_count Int @default(0)
+
+  // Última victoria por W.O. Para que otro W.O. le cuente necesita 3 partidos
+  // jugados de verdad después de esta fecha; así nadie escala a punta de
+  // rivales que no contestan.
+  last_wo_win_at DateTime?
 
   user     User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
   parent   Player? @relation("family", fields: [parent_id], references: [id])
@@ -56,6 +70,8 @@ model Player {
   master_matches_won   MasterMatch[]       @relation("master_winner")
   reservations         Reservation[]
   notifications        Notification[]
+  achievements         PlayerAchievement[]
+  season_standings     SeasonStanding[]
 
   @@map("players")
 }
@@ -281,4 +297,67 @@ model Notification {
   @@index([player_id, read])
   @@index([player_id, created_at])
   @@map("notifications")
+}
+
+/// Temporada de la escalerilla (semestre). El cierre congela un SeasonStanding
+/// por jugador; la apertura registra su posición inicial.
+model Season {
+  id         String    @id @default(uuid())
+  slug       String    @unique // "2026-1"
+  name       String // "Escalerilla 2026 · 1er Semestre"
+  status     String    @default("active") // active | closed
+  started_at DateTime  @default(now())
+  closed_at  DateTime?
+
+  /// Rangos de categoría con los que se jugó (ver common/ladder.ts).
+  /// "legacy4" = 4 categorías sobre 48 puestos, hasta el 1er semestre 2026.
+  /// "v2" = 3 categorías sin tope, desde el 2do semestre 2026.
+  /// Guardarlo evita reetiquetar el histórico al cambiar los rangos.
+  category_scheme String @default("v2")
+
+  standings SeasonStanding[]
+
+  @@map("seasons")
+}
+
+/// Foto del jugador en una temporada: posición inicial, posición final,
+/// récord congelado y resultado del cuadro Master de esa temporada.
+model SeasonStanding {
+  id             String  @id @default(uuid())
+  season_id      String
+  player_id      String
+  start_position Int?
+  final_position Int?
+  wins           Int     @default(0)
+  losses         Int     @default(0)
+  total_matches  Int     @default(0)
+  category       String? // A | B | C | D al cierre
+  master_result  String? // champion | finalist | semifinalist
+
+  season Season @relation(fields: [season_id], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [player_id], references: [id], onDelete: Cascade)
+
+  @@unique([season_id, player_id])
+  @@index([player_id])
+  @@map("season_standings")
+}
+
+/// Logro desbloqueado. El catálogo vive en código (achievements.catalog.ts):
+/// agregar un logro nuevo no requiere migración.
+/// `season_slug` usa el centinela "global" en vez de NULL porque en Postgres
+/// los NULL son distintos entre sí y el @@unique no impediría duplicados.
+model PlayerAchievement {
+  id          String   @id @default(uuid())
+  player_id   String
+  code        String
+  season_slug String   @default("global")
+  context     Json?
+  unlocked_at DateTime @default(now())
+  seen        Boolean  @default(false)
+
+  player Player @relation(fields: [player_id], references: [id], onDelete: Cascade)
+
+  @@unique([player_id, code, season_slug])
+  @@index([player_id, seen])
+  @@map("player_achievements")
 }

@@ -3,6 +3,7 @@ import { ReservationsService } from './reservations.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppLogger } from '../common/app.logger';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AchievementsService } from '../achievements/achievements.service';
 
 describe('ReservationsService.getAvailability — nombres de compañero/visita', () => {
   let service: ReservationsService;
@@ -21,11 +22,15 @@ describe('ReservationsService.getAvailability — nombres de compañero/visita',
   };
 
   const prismaMock = {
-    systemConfig: { findUnique: jest.fn().mockResolvedValue({ value: 'invierno' }) },
+    systemConfig: {
+      findUnique: jest.fn().mockResolvedValue({ value: 'invierno' }),
+    },
     court: {
-      findMany: jest.fn().mockResolvedValue([
-        { id: 'court-1', name: 'Cancha 1', is_active: true },
-      ]),
+      findMany: jest
+        .fn()
+        .mockResolvedValue([
+          { id: 'court-1', name: 'Cancha 1', is_active: true },
+        ]),
     },
     reservation: { findMany: jest.fn().mockResolvedValue([reservation]) },
     courtBlock: { findMany: jest.fn().mockResolvedValue([]) },
@@ -46,6 +51,10 @@ describe('ReservationsService.getAvailability — nombres de compañero/visita',
         { provide: PrismaService, useValue: prismaMock },
         { provide: AppLogger, useValue: {} },
         { provide: NotificationsService, useValue: { create: jest.fn() } },
+        {
+          provide: AchievementsService,
+          useValue: { evaluateAfterReservation: jest.fn() },
+        },
       ],
     }).compile();
     service = module.get(ReservationsService);

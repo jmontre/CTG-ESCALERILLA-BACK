@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { whatsappService } from '../notifications/whatsapp.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AchievementsService } from '../achievements/achievements.service';
 import { AppLogger } from '../common/app.logger';
 import {
   nowInChile,
@@ -54,6 +55,7 @@ export class ReservationsService {
     private prisma: PrismaService,
     private appLogger: AppLogger,
     private notificationsService: NotificationsService,
+    private achievements: AchievementsService,
   ) {}
 
   /** Dispara notificaciones sin bloquear la respuesta HTTP. */
@@ -742,6 +744,11 @@ export class ReservationsService {
       data.partner_name,
       data.school_name,
     );
+    // Logros de cancha (anfitrión, madrugador, nocturno). No bloquea la respuesta.
+    this.notifyAsync(() =>
+      this.achievements.evaluateAfterReservation(player.id),
+    );
+
     return { message: 'Reserva creada correctamente.', reservation };
   }
 

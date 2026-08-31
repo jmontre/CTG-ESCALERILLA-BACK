@@ -12,6 +12,8 @@ import { CronModule } from './cron/cron.module';
 import { MasterModule } from './master/master.module';
 import { ReservationsModule } from './reservations/reservations.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { AchievementsModule } from './achievements/achievements.module';
+import { SeasonsModule } from './seasons/seasons.module';
 import { TestController } from './test/test.controller';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -35,6 +37,8 @@ import { CommonModule } from './common/common.module';
     MasterModule,
     ReservationsModule,
     NotificationsModule,
+    AchievementsModule,
+    SeasonsModule,
     CommonModule,
   ],
   controllers: [AppController, TestController],

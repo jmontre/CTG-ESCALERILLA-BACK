@@ -15,9 +15,15 @@ async function main() {
     },
   });
 
-  console.log('┌────┬─────────────────────────────────┬─────────────────────────┬──────────────┬──────────┐');
-  console.log('│ #  │ Nombre                          │ Username                │ Email        │ Teléfono │');
-  console.log('├────┼─────────────────────────────────┼─────────────────────────┼──────────────┼──────────┤');
+  console.log(
+    '┌────┬─────────────────────────────────┬─────────────────────────┬──────────────┬──────────┐',
+  );
+  console.log(
+    '│ #  │ Nombre                          │ Username                │ Email        │ Teléfono │',
+  );
+  console.log(
+    '├────┼─────────────────────────────────┼─────────────────────────┼──────────────┼──────────┤',
+  );
 
   const data: any[] = [];
 
@@ -35,11 +41,13 @@ async function main() {
     data.push(row);
 
     console.log(
-      `│ ${player.position.toString().padStart(2, ' ')} │ ${player.name.padEnd(31)} │ ${player.user.username.padEnd(23)} │ ${(player.user.email.substring(0, 12) + '...').padEnd(12)} │ ${(player.phone || 'N/A').padEnd(8)} │`
+      `│ ${player.position.toString().padStart(2, ' ')} │ ${player.name.padEnd(31)} │ ${player.user.username.padEnd(23)} │ ${(player.user.email.substring(0, 12) + '...').padEnd(12)} │ ${(player.phone || 'N/A').padEnd(8)} │`,
     );
   }
 
-  console.log('└────┴─────────────────────────────────┴─────────────────────────┴──────────────┴──────────┘');
+  console.log(
+    '└────┴─────────────────────────────────┴─────────────────────────┴──────────────┴──────────┘',
+  );
 
   // Exportar a JSON
   const jsonOutput = JSON.stringify(data, null, 2);
@@ -47,18 +55,22 @@ async function main() {
   console.log('\n✅ Exportado a: current-positions.json');
 
   // Exportar a CSV
-  const csvHeaders = 'Position,Name,Username,Email,Phone,Immune Until,Vulnerable Until\n';
-  const csvRows = data.map(p => 
-    `${p.position},"${p.name}",${p.username},${p.email},${p.phone || ''},${p.immune_until || ''},${p.vulnerable_until || ''}`
-  ).join('\n');
-  
+  const csvHeaders =
+    'Position,Name,Username,Email,Phone,Immune Until,Vulnerable Until\n';
+  const csvRows = data
+    .map(
+      (p) =>
+        `${p.position},"${p.name}",${p.username},${p.email},${p.phone || ''},${p.immune_until || ''},${p.vulnerable_until || ''}`,
+    )
+    .join('\n');
+
   fs.writeFileSync('current-positions.csv', csvHeaders + csvRows);
   console.log('✅ Exportado a: current-positions.csv');
 
   // Exportar script de TypeScript listo para usar
   const tsScript = `// Posiciones actuales extraídas el ${new Date().toISOString()}
 const newPositions: { [key: string]: number } = {
-${data.map(p => `  '${p.username}': ${p.position}, // ${p.name}`).join('\n')}
+${data.map((p) => `  '${p.username}': ${p.position}, // ${p.name}`).join('\n')}
 };`;
 
   fs.writeFileSync('current-positions.ts', tsScript);

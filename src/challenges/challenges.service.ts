@@ -9,6 +9,7 @@ import { ChallengeRulesService } from './challenge-rules.service';
 import { whatsappService } from '../notifications/whatsapp.service';
 import { emailService } from '../notifications/email.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AchievementsService } from '../achievements/achievements.service';
 import { AppLogger } from '../common/app.logger';
 import { add } from 'date-fns';
 import { toChileDateStr, chileWeekBoundsFromStr } from '../common/dates';
@@ -37,6 +38,7 @@ export class ChallengesService {
     private rules: ChallengeRulesService,
     private appLogger: AppLogger,
     private notificationsService: NotificationsService,
+    private achievements: AchievementsService,
   ) {}
 
   private sleep(ms: number) {
@@ -229,10 +231,13 @@ export class ChallengesService {
     if (claimed.count === 0)
       throw new BadRequestException('Este desafío ya no está pendiente');
 
-    await this.rules.processWin(
+    // Rechazar no es ganar un partido: el que rechaza BAJA al puesto del
+    // desafiante y los del medio suben uno. El desafiante sube un solo puesto.
+    await this.rules.processDecline(
       challengeId,
       challenge.challenger_id,
       challenge.challenged_id,
+      'challenge_rejected',
     );
     await this.rules.applyPostMatchStatus(
       challenge.challenger_id,
@@ -247,7 +252,7 @@ export class ChallengesService {
       if (challenge.challenger.phone) {
         await whatsappService.sendMessage(
           challenge.challenger.phone,
-          `🎾 *Club de Tenis Graneros*\n\n${challenge.challenged.name} rechazó tu desafío.\n\n🏆 ¡Ganas por W.O. y subes en la escalerilla!`,
+          `🎾 *Club de Tenis Graneros*\n\n${challenge.challenged.name} rechazó tu desafío.\n\n📈 Subes un puesto: ${challenge.challenged.name} baja a tu posición anterior.`,
         );
         await this.sleep(500);
       }
@@ -660,6 +665,15 @@ export class ChallengesService {
         await this.rules.processWin(challengeId, winnerId, loserId);
         await this.rules.applyPostMatchStatus(winnerId, loserId);
         await this.rules.updateStats(winnerId, loserId);
+
+        // Logros: después del corrimiento, porque varios leen la posición nueva.
+        await this.achievements.evaluateAfterChallenge({
+          winnerId,
+          loserId,
+          score: result1.score,
+          oldWinnerPosition,
+          oldLoserPosition,
+        });
 
         await this.prisma.challenge.update({
           where: { id: challengeId },

@@ -5,15 +5,29 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { categoryBounds } from '../common/ladder';
 import { whatsappService } from '../notifications/whatsapp.service';
 import { toChileDateStr, chileWeekBoundsFromStr } from '../common/dates';
 
-const CATEGORY_RANGES: Record<string, [number, number]> = {
-  A: [1, 12],
-  B: [13, 24],
-  C: [25, 36],
-  D: [37, 48],
-};
+/**
+ * Estructura del cuadro por categoría (desde el 2do semestre 2026):
+ *   · puestos 1-4 del rango  → clasifican directo al round robin
+ *   · puestos 5-12           → playoff a partido único, salen 4
+ *   · puestos 13-14          → eliminados
+ * Los 8 resultantes se reparten en Grupo A y Grupo B por paridad de posición.
+ */
+const MASTER_SLOTS = 14;
+const DIRECT_QUALIFIERS = 4;
+const PLAYOFF_SLOTS = 8; // puestos 5 al 12
+const MIN_PLAYERS = DIRECT_QUALIFIERS + PLAYOFF_SLOTS; // 12
+
+/** Rango de posiciones de la categoría, acotado a los 14 cupos del Master. */
+function masterRange(category: string): [number, number] | null {
+  const bounds = categoryBounds(category);
+  if (!bounds) return null;
+  // La última categoría no tiene tope, así que se corta en los 14 cupos.
+  return [bounds.from, bounds.to ?? bounds.from + MASTER_SLOTS - 1];
+}
 
 // Slots de alta demanda (mantener sincronizado con challenges.service y reservations.service)
 const HIGH_DEMAND: Record<string, string[]> = {
@@ -147,9 +161,9 @@ export class MasterService {
     round_robin_end?: string;
     final_date?: string;
   }) {
-    const range = CATEGORY_RANGES[data.category];
+    const range = masterRange(data.category);
     if (!range)
-      throw new BadRequestException('Categoría inválida. Usa A, B, C o D.');
+      throw new BadRequestException('Categoría inválida. Usa A, B o C.');
 
     const existing = await this.prisma.masterSeason.findFirst({
       where: { category: data.category, status: { not: 'completed' } },
@@ -162,25 +176,28 @@ export class MasterService {
     const players = await this.prisma.player.findMany({
       where: { position: { gte: range[0], lte: range[1] } },
       orderBy: { position: 'asc' },
-      take: 8,
+      take: MASTER_SLOTS,
     });
 
-    if (players.length < 8) {
+    if (players.length < MIN_PLAYERS) {
       throw new BadRequestException(
-        `La Categoría ${data.category} tiene solo ${players.length} jugadores. Se necesitan 8.`,
+        `La Categoría ${data.category} tiene solo ${players.length} jugadores. ` +
+          `Se necesitan al menos ${MIN_PLAYERS} (4 clasificados directos + 8 de playoff).`,
       );
     }
 
-    // Grupo A: posiciones impares del rango (1°, 3°, 5°, 7°)
-    // Grupo B: posiciones pares del rango (2°, 4°, 6°, 8°)
-    const grupoA = [players[0], players[2], players[4], players[6]];
-    const grupoB = [players[1], players[3], players[5], players[7]];
+    // Los que entran al playoff: del 5° al 12° del rango. Del 13° en adelante
+    // quedan eliminados sin jugar.
+    const playoffPlayers = players.slice(
+      DIRECT_QUALIFIERS,
+      DIRECT_QUALIFIERS + PLAYOFF_SLOTS,
+    );
 
     const season = await this.prisma.masterSeason.create({
       data: {
         name: data.name,
         category: data.category,
-        status: 'active',
+        status: 'playoffs',
         round_robin_start: data.round_robin_start
           ? new Date(data.round_robin_start)
           : null,
@@ -191,62 +208,75 @@ export class MasterService {
       },
     });
 
-    const groups = [
-      { name: 'Grupo A', players: grupoA },
-      { name: 'Grupo B', players: grupoB },
-    ];
-
-    for (const { name: groupName, players: groupPlayers } of groups) {
-      const group = await this.prisma.masterGroup.create({
-        data: { season_id: season.id, name: groupName },
+    // Playoff a partido único: se cruzan el mejor con el peor (5°v12°,
+    // 6°v11°, 7°v10°, 8°v9°) para que el mejor sembrado tenga el rival más
+    // accesible, como en cualquier llave.
+    for (let i = 0; i < PLAYOFF_SLOTS / 2; i++) {
+      await this.prisma.masterMatch.create({
+        data: {
+          season_id: season.id,
+          round: 'playoff',
+          player1_id: playoffPlayers[i].id,
+          player2_id: playoffPlayers[PLAYOFF_SLOTS - 1 - i].id,
+          status: 'pending',
+        },
       });
-      for (const player of groupPlayers) {
-        await this.prisma.masterGroupPlayer.create({
-          data: { group_id: group.id, player_id: player.id },
-        });
-      }
-      for (let i = 0; i < groupPlayers.length; i++) {
-        for (let j = i + 1; j < groupPlayers.length; j++) {
-          await this.prisma.masterMatch.create({
-            data: {
-              group_id: group.id,
-              season_id: season.id,
-              round: 'group',
-              player1_id: groupPlayers[i].id,
-              player2_id: groupPlayers[j].id,
-              status: 'pending',
-            },
-          });
-        }
-      }
     }
 
-    // Notificar jugadores (fire-and-forget)
-    const grupoANames = grupoA.map((p) => p.name).join('\n  • ');
-    const grupoBNames = grupoB.map((p) => p.name).join('\n  • ');
+    const directNames = players
+      .slice(0, DIRECT_QUALIFIERS)
+      .map((p) => `${p.name} (#${p.position})`)
+      .join('\n  • ');
+    const eliminated = players.slice(DIRECT_QUALIFIERS + PLAYOFF_SLOTS);
+
     this.notifyAsync(async () => {
-      for (const { name: groupName, players: groupPlayers } of groups) {
-        for (const player of groupPlayers) {
+      for (const player of players.slice(0, DIRECT_QUALIFIERS)) {
+        await this.sendWsp(
+          player.phone,
+          `🏆 *Master CTG — Categoría ${data.category}*\n\n` +
+            `¡Clasificaste DIRECTO al round robin!\n\n` +
+            `Te saltas el playoff. Espera a que se definan los 4 cupos restantes ` +
+            `para conocer tu grupo.`,
+        );
+        await this.sleep(500);
+      }
+      for (let i = 0; i < PLAYOFF_SLOTS / 2; i++) {
+        const p1 = playoffPlayers[i];
+        const p2 = playoffPlayers[PLAYOFF_SLOTS - 1 - i];
+        for (const [player, rival] of [
+          [p1, p2],
+          [p2, p1],
+        ]) {
           await this.sendWsp(
             player.phone,
             `🏆 *Master CTG — Categoría ${data.category}*\n\n` +
-              `¡Clasificaste al Master de fin de semestre!\n\n` +
-              `📋 *${groupName}*\n` +
-              `Tus rivales: ${groupPlayers
-                .filter((p) => p.id !== player.id)
-                .map((p) => p.name)
-                .join(', ')}\n\n` +
-              `📅 Round Robin: ${data.round_robin_start ? new Date(data.round_robin_start).toLocaleDateString('es-CL') : '?'} — ${data.round_robin_end ? new Date(data.round_robin_end).toLocaleDateString('es-CL') : '?'}\n` +
-              `🎾 Final: ${data.final_date ? new Date(data.final_date).toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' }) : '?'}\n\n` +
-              `Coordina tus partidos con tus rivales e ingresa el resultado en la app.`,
+              `Juegas el PLAYOFF por un cupo al round robin.\n\n` +
+              `⚔️ Tu rival: *${rival.name}* (#${rival.position})\n\n` +
+              `Coordina la fecha e ingresa el resultado en la app.`,
           );
           await this.sleep(500);
         }
       }
+      for (const player of eliminated) {
+        await this.sendWsp(
+          player.phone,
+          `🏆 *Master CTG — Categoría ${data.category}*\n\n` +
+            `Este semestre quedaste fuera del cuadro por posición (#${player.position}). ` +
+            `¡A escalar en la escalerilla para el próximo!`,
+        );
+        await this.sleep(500);
+      }
+
+      const playoffLines = Array.from(
+        { length: PLAYOFF_SLOTS / 2 },
+        (_, i) =>
+          `  • ${playoffPlayers[i].name} vs ${playoffPlayers[PLAYOFF_SLOTS - 1 - i].name}`,
+      ).join('\n');
+
       await this.sendWspGroup(
         `🏆 *Master CTG — Categoría ${data.category} generado*\n\n` +
-          `*Grupo A:*\n  • ${grupoANames}\n\n` +
-          `*Grupo B:*\n  • ${grupoBNames}\n\n` +
+          `*Clasificados directos:*\n  • ${directNames}\n\n` +
+          `*Playoff por los 4 cupos restantes:*\n${playoffLines}\n\n` +
           `📅 Round Robin: ${data.round_robin_start ? new Date(data.round_robin_start).toLocaleDateString('es-CL') : '?'} al ${data.round_robin_end ? new Date(data.round_robin_end).toLocaleDateString('es-CL') : '?'}\n` +
           `🎾 Final: ${data.final_date ? new Date(data.final_date).toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' }) : '?'}`,
       );
@@ -637,8 +667,20 @@ export class MasterService {
       await this.checkAndGenerateSemifinals(match.season_id);
     }
 
+    if (match.round === 'playoff') {
+      await this.checkAndGenerateGroups(match.season_id);
+    }
+
     if (match.round === 'semifinal') {
       await this.checkAndGenerateFinal(match.season_id);
+    }
+
+    // La final cierra la temporada. Antes quedaba colgada en estado 'final'.
+    if (match.round === 'final') {
+      await this.prisma.masterSeason.update({
+        where: { id: match.season_id },
+        data: { status: 'completed' },
+      });
     }
 
     // Notificar jugadores (fire-and-forget)
@@ -690,6 +732,117 @@ export class MasterService {
       );
     }
     return this.processMasterResult(matchId, winnerId, score);
+  }
+
+  /**
+   * Cierra el playoff y arma el round robin: los 4 clasificados directos más
+   * los 4 ganadores del playoff se reparten en Grupo A y Grupo B por paridad
+   * de posición en la escalerilla (1°,3°,5°,7° al A; 2°,4°,6°,8° al B).
+   *
+   * Se dispara al completarse cada partido de playoff y no hace nada hasta que
+   * están los cuatro, así que es seguro llamarla de más.
+   */
+  private async checkAndGenerateGroups(seasonId: string) {
+    const season = await this.prisma.masterSeason.findUnique({
+      where: { id: seasonId },
+    });
+    if (!season || season.status !== 'playoffs') return;
+
+    const playoffs = await this.prisma.masterMatch.findMany({
+      where: { season_id: seasonId, round: 'playoff' },
+      include: { winner: true },
+    });
+    if (
+      playoffs.length === 0 ||
+      !playoffs.every((m) => m.status === 'completed' && m.winner_id)
+    ) {
+      return;
+    }
+
+    const existingGroup = await this.prisma.masterGroup.findFirst({
+      where: { season_id: seasonId },
+    });
+    if (existingGroup) return;
+
+    const range = masterRange(season.category);
+    if (!range) return;
+
+    const direct = await this.prisma.player.findMany({
+      where: { position: { gte: range[0], lte: range[1] } },
+      orderBy: { position: 'asc' },
+      take: DIRECT_QUALIFIERS,
+    });
+    const winners = playoffs
+      .map((m) => m.winner!)
+      .filter((w): w is NonNullable<typeof w> => !!w);
+
+    // Los 8 ordenados por su puesto en la escalerilla, y repartidos por paridad.
+    const qualified = [...direct, ...winners].sort(
+      (a, b) => (a.position ?? 9999) - (b.position ?? 9999),
+    );
+    const grupoA = qualified.filter((_, i) => i % 2 === 0);
+    const grupoB = qualified.filter((_, i) => i % 2 === 1);
+
+    const groups = [
+      { name: 'Grupo A', players: grupoA },
+      { name: 'Grupo B', players: grupoB },
+    ];
+
+    for (const { name: groupName, players: groupPlayers } of groups) {
+      const group = await this.prisma.masterGroup.create({
+        data: { season_id: seasonId, name: groupName },
+      });
+      for (const player of groupPlayers) {
+        await this.prisma.masterGroupPlayer.create({
+          data: { group_id: group.id, player_id: player.id },
+        });
+      }
+      for (let i = 0; i < groupPlayers.length; i++) {
+        for (let j = i + 1; j < groupPlayers.length; j++) {
+          await this.prisma.masterMatch.create({
+            data: {
+              group_id: group.id,
+              season_id: seasonId,
+              round: 'group',
+              player1_id: groupPlayers[i].id,
+              player2_id: groupPlayers[j].id,
+              status: 'pending',
+            },
+          });
+        }
+      }
+    }
+
+    await this.prisma.masterSeason.update({
+      where: { id: seasonId },
+      data: { status: 'active' },
+    });
+
+    const grupoANames = grupoA.map((p) => p.name).join('\n  • ');
+    const grupoBNames = grupoB.map((p) => p.name).join('\n  • ');
+    this.notifyAsync(async () => {
+      for (const { name: groupName, players: groupPlayers } of groups) {
+        for (const player of groupPlayers) {
+          await this.sendWsp(
+            player.phone,
+            `🏆 *Master CTG — Categoría ${season.category}*\n\n` +
+              `¡Arranca el round robin!\n\n` +
+              `📋 *${groupName}*\n` +
+              `Tus rivales: ${groupPlayers
+                .filter((p) => p.id !== player.id)
+                .map((p) => p.name)
+                .join(', ')}\n\n` +
+              `Coordina tus partidos e ingresa los resultados en la app.`,
+          );
+          await this.sleep(500);
+        }
+      }
+      await this.sendWspGroup(
+        `🏆 *Master CTG — Categoría ${season.category}: grupos definidos*\n\n` +
+          `*Grupo A:*\n  • ${grupoANames}\n\n` +
+          `*Grupo B:*\n  • ${grupoBNames}`,
+      );
+    });
   }
 
   private async checkAndGenerateSemifinals(seasonId: string) {
