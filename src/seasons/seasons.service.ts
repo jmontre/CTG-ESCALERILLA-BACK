@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { AchievementsService } from '../achievements/achievements.service';
 import { categoryOf, CategoryScheme } from '../common/ladder';
+import { NotificationsService } from '../notifications/notifications.service';
 import { ACHIEVEMENTS_BY_CODE } from '../achievements/achievements.catalog';
 
 /**
@@ -24,6 +25,7 @@ export class SeasonsService {
   constructor(
     private prisma: PrismaService,
     private achievements: AchievementsService,
+    private notifications: NotificationsService,
   ) {}
 
   /** Jugadores que participan de la escalerilla (excluye admins y sin posición). */
@@ -154,7 +156,15 @@ export class SeasonsService {
       data: { status: 'closed', closed_at: new Date() },
     });
 
-    return { season: closed, standings: players.length, ...podium };
+    // Aviso a todo el club con los campeones de cada categoría.
+    const notified = await this.notifyPodium(slug);
+
+    return {
+      season: closed,
+      standings: players.length,
+      ...podium,
+      notified: notified.sent,
+    };
   }
 
   /**
@@ -253,6 +263,93 @@ export class SeasonsService {
     };
   }
 
+  /**
+   * Podio de la temporada: campeón y finalista de cada categoría.
+   * Lo ve TODO el club, no solo quienes lo ganaron — el cierre de temporada es
+   * del club entero, y si solo se felicitara a los campeones el resto ni se
+   * enteraría de quién ganó.
+   */
+  async podium(seasonId: string) {
+    const standings = await this.prisma.seasonStanding.findMany({
+      where: {
+        season_id: seasonId,
+        master_result: { in: ['champion', 'finalist'] },
+      },
+      include: {
+        player: { select: { id: true, name: true, avatar_url: true } },
+      },
+      orderBy: { category: 'asc' },
+    });
+
+    const byCategory = new Map<
+      string,
+      { category: string; champion: string | null; finalist: string | null }
+    >();
+    for (const s of standings) {
+      const cat = s.category ?? '—';
+      const row = byCategory.get(cat) ?? {
+        category: cat,
+        champion: null,
+        finalist: null,
+      };
+      if (s.master_result === 'champion') row.champion = s.player.name;
+      else row.finalist = s.player.name;
+      byCategory.set(cat, row);
+    }
+    return [...byCategory.values()].sort((a, b) =>
+      a.category.localeCompare(b.category),
+    );
+  }
+
+  /**
+   * Avisa a todo el club quiénes fueron los campeones. Idempotente: salta a
+   * quien ya tenga el aviso de esta temporada, así se puede reejecutar sin
+   * llenarle la campana a nadie.
+   */
+  async notifyPodium(slug: string) {
+    const season = await this.prisma.season.findUnique({ where: { slug } });
+    if (!season) throw new NotFoundException(`Temporada "${slug}" no existe`);
+
+    const rows = await this.podium(season.id);
+    if (rows.length === 0) return { sent: 0, skipped: 0, podium: [] };
+
+    const resumen = rows
+      .map((r) => `${r.category}: ${r.champion ?? '—'}`)
+      .join(' · ');
+
+    const standings = await this.prisma.seasonStanding.findMany({
+      where: { season_id: season.id },
+      select: { player_id: true },
+    });
+
+    let sent = 0;
+    let skipped = 0;
+    for (const { player_id } of standings) {
+      const already = await this.prisma.notification.findFirst({
+        where: {
+          player_id,
+          type: 'season_winner',
+          body: { contains: season.name },
+        },
+      });
+      if (already) {
+        skipped++;
+        continue;
+      }
+      await this.notifications.create(player_id, {
+        type: 'season_winner',
+        title: '🏆 Campeones del semestre',
+        body:
+          `Se cerró ${season.name}. ¡Felicitaciones a los campeones y finalistas ` +
+          `de cada categoría! Campeones — ${resumen}.`,
+        action_label: 'Ver resumen',
+        action_path: '/perfil',
+      });
+      sent++;
+    }
+    return { sent, skipped, podium: rows };
+  }
+
   // ─────────────────── Resumen de cierre (modal del jugador) ───────────────────
 
   /**
@@ -294,6 +391,9 @@ export class SeasonsService {
     return {
       pending: true as const,
       season: { slug: season.slug, name: season.name },
+      // El podio va para todos: los campeones lo ven después de su trofeo, y
+      // el resto se entera de quién ganó.
+      podium: await this.podium(season.id),
       next_season: nextSeason
         ? { slug: nextSeason.slug, name: nextSeason.name }
         : null,
