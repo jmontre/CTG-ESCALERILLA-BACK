@@ -239,9 +239,11 @@ export class ChallengesService {
       challenge.challenged_id,
       'challenge_rejected',
     );
+    // Sin inmunidad: ganar porque el otro rechazó no es haber jugado.
     await this.rules.applyPostMatchStatus(
       challenge.challenger_id,
       challenge.challenged_id,
+      { grantImmunity: false },
     );
     this.appLogger.challengeRejected(
       challenge.challenger.name,

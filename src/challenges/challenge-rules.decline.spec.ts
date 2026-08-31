@@ -20,6 +20,8 @@ describe('ChallengeRulesService — desaires', () => {
       position: number | null;
       no_response_count: number;
       last_wo_win_at: Date | null;
+      immune_until: Date | null;
+      vulnerable_until: Date | null;
     }
   >;
 
@@ -32,6 +34,8 @@ describe('ChallengeRulesService — desaires', () => {
         position: i + 1,
         no_response_count: 0,
         last_wo_win_at: null,
+        immune_until: null,
+        vulnerable_until: null,
       });
     });
   }
@@ -89,6 +93,9 @@ describe('ChallengeRulesService — desaires', () => {
         }
         if (data.last_wo_win_at !== undefined)
           p.last_wo_win_at = data.last_wo_win_at;
+        if (data.immune_until !== undefined) p.immune_until = data.immune_until;
+        if (data.vulnerable_until !== undefined)
+          p.vulnerable_until = data.vulnerable_until;
         return Promise.resolve({ ...p });
       }),
       updateMany: jest.fn(() => Promise.resolve({ count: 0 })),
@@ -264,6 +271,31 @@ describe('ChallengeRulesService — desaires', () => {
       expect(ladder.get('J20')!.position).toBe(20);
       // El contador igual avanza: si vuelve a subir, arrastra el historial.
       expect(ladder.get('J20')!.no_response_count).toBe(2);
+    });
+  });
+
+  describe('applyPostMatchStatus', () => {
+    it('ganar jugando da inmunidad', async () => {
+      seed(['Alfa', 'Beltrán']);
+      await service.applyPostMatchStatus('Beltrán', 'Alfa');
+      expect(ladder.get('Beltrán')!.immune_until).not.toBeNull();
+      expect(ladder.get('Alfa')!.vulnerable_until).not.toBeNull();
+    });
+
+    it('ganar por W.O. NO da inmunidad, pero el otro igual queda vulnerable', async () => {
+      // La inmunidad premia haber jugado y ganado, no que el rival faltara.
+      seed(['Alfa', 'Beltrán']);
+      await service.applyPostMatchStatus('Beltrán', 'Alfa', {
+        grantImmunity: false,
+      });
+      expect(ladder.get('Beltrán')!.immune_until).toBeNull();
+      expect(ladder.get('Alfa')!.vulnerable_until).not.toBeNull();
+    });
+
+    it('el #1 nunca recibe inmunidad', async () => {
+      seed(['Alfa', 'Beltrán']);
+      await service.applyPostMatchStatus('Alfa', 'Beltrán');
+      expect(ladder.get('Alfa')!.immune_until).toBeNull();
     });
   });
 
