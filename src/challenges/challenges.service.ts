@@ -127,6 +127,122 @@ export class ChallengesService {
     });
   }
 
+  /**
+   * Historial del jugador acotado a un período, con las estadísticas de ESE
+   * período.
+   *
+   * Las stats de `Player` (wins/losses) se reinician en cada cierre de
+   * temporada, así que no sirven para mirar hacia atrás. Los desafíos, en
+   * cambio, nunca se borran: el histórico se reconstruye desde ahí, y por eso
+   * un semestre cerrado hace meses sigue mostrando sus números.
+   *
+   * `period`: "all" · un año ("2026") · el slug de una temporada ("2026-1").
+   */
+  async historyForPlayer(playerId: string, period = 'all') {
+    const seasons = await this.prisma.season.findMany({
+      orderBy: { started_at: 'asc' },
+    });
+
+    // Cada temporada va desde que empezó hasta que empezó la siguiente. Usar su
+    // `closed_at` dejaría huecos o solapes: el cierre y la apertura de la
+    // siguiente no ocurren en el mismo instante.
+    const rangos = seasons.map((s, i) => ({
+      slug: s.slug,
+      name: s.name,
+      year: s.started_at.getUTCFullYear(),
+      from: s.started_at,
+      to: seasons[i + 1]?.started_at ?? null,
+    }));
+
+    const años = [...new Set(rangos.map((r) => r.year))].sort((a, b) => b - a);
+    const periods = [
+      { id: 'all', label: 'Todo el historial', type: 'all' as const },
+      ...años.flatMap((year) => [
+        { id: String(year), label: String(year), type: 'year' as const, year },
+        ...rangos
+          .filter((r) => r.year === year)
+          .map((r) => ({
+            id: r.slug,
+            label: r.name
+              .replace(/^Escalerilla\s*/i, '')
+              .replace(`${year} · `, ''),
+            type: 'season' as const,
+            year,
+          })),
+      ]),
+    ];
+
+    // Rango de fechas del período pedido.
+    let from: Date | null = null;
+    let to: Date | null = null;
+    const temporada = rangos.find((r) => r.slug === period);
+    if (temporada) {
+      from = temporada.from;
+      to = temporada.to;
+    } else if (/^\d{4}$/.test(period)) {
+      from = new Date(Date.UTC(Number(period), 0, 1));
+      to = new Date(Date.UTC(Number(period) + 1, 0, 1));
+    }
+
+    const matches = await this.prisma.challenge.findMany({
+      where: {
+        status: 'completed',
+        winner_id: { not: null },
+        OR: [{ challenger_id: playerId }, { challenged_id: playerId }],
+        ...(from || to
+          ? {
+              played_at: {
+                ...(from ? { gte: from } : {}),
+                ...(to ? { lt: to } : {}),
+              },
+            }
+          : {}),
+      },
+      include: {
+        challenger: { select: { id: true, name: true, position: true } },
+        challenged: { select: { id: true, name: true, position: true } },
+      },
+      orderBy: { played_at: 'desc' },
+    });
+
+    const wins = matches.filter((m) => m.winner_id === playerId).length;
+    const played = matches.length;
+
+    // De una temporada cerrada se puede mostrar además cómo terminó.
+    let standing: {
+      final_position: number | null;
+      category: string | null;
+      master_result: string | null;
+    } | null = null;
+    if (temporada) {
+      const season = seasons.find((s) => s.slug === temporada.slug)!;
+      const st = await this.prisma.seasonStanding.findUnique({
+        where: {
+          season_id_player_id: { season_id: season.id, player_id: playerId },
+        },
+        select: {
+          final_position: true,
+          category: true,
+          master_result: true,
+        },
+      });
+      if (st) standing = st;
+    }
+
+    return {
+      periods,
+      selected: periods.some((p) => p.id === period) ? period : 'all',
+      stats: {
+        played,
+        wins,
+        losses: played - wins,
+        effectiveness: played > 0 ? Math.round((wins / played) * 100) : 0,
+        ...standing,
+      },
+      matches,
+    };
+  }
+
   async findOne(id: string) {
     return this.prisma.challenge.findUnique({
       where: { id },

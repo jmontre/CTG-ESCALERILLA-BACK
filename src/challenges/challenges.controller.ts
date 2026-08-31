@@ -6,6 +6,7 @@ import {
   Param,
   BadRequestException,
   Request,
+  Query,
 } from '@nestjs/common';
 import { ChallengesService } from './challenges.service';
 import { CreateChallengeDto } from './dto/create-challenge.dto';
@@ -39,6 +40,19 @@ export class ChallengesController {
    * GET /challenges/:id
    * Obtener un desafío específico
    */
+  /**
+   * GET /challenges/history?period=all|2026|2026-1
+   * Historial del usuario autenticado con las stats del período elegido.
+   * Va ANTES de :id, o "history" se interpretaría como un id de desafío.
+   */
+  @Get('history')
+  async history(@Request() req: any, @Query('period') period?: string) {
+    const playerId = await this.challengesService.getPlayerIdFromUserId(
+      req.user.sub,
+    );
+    return this.challengesService.historyForPlayer(playerId, period ?? 'all');
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.challengesService.findOne(id);
