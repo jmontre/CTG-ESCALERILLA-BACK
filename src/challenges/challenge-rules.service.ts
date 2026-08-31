@@ -16,6 +16,13 @@ const MATCHES_TO_REVALIDATE_WO = 3;
 /** No-respuestas antes del primer castigo de categoría. */
 const NO_RESPONSES_BEFORE_DEMOTION = 2;
 
+/**
+ * Días que hay que esperar para volver a desafiar al mismo rival.
+ * Cuenta desde el partido JUGADO: un rechazo o una no-respuesta no bloquean,
+ * porque no hubo partido y castigar ahí dejaría al desafiante sin a quién retar.
+ */
+const REMATCH_COOLDOWN_DAYS = 5;
+
 @Injectable()
 export class ChallengeRulesService {
   constructor(private prisma: PrismaService) {}
@@ -144,6 +151,9 @@ export class ChallengeRulesService {
     // REGLA 1: Verificar niveles (= filas de la pirámide)
     this.validateLevel(challenger, challenged, await this.ladderSize());
 
+    // REGLA 1 bis: no repetir el mismo cruce antes de tiempo
+    await this.validateNotRecentOpponent(challenger, challenged);
+
     // REGLA 2: Verificar que ninguno esté ocupado
     await this.validateNotOccupied(challengerId, challenger.name);
     await this.validateNotOccupied(challengedId, challenged.name);
@@ -192,6 +202,10 @@ export class ChallengeRulesService {
     const availablePlayers: Player[] = [];
     for (const p of candidates) {
       if (!canChallengePosition(player.position, p.position, size)) continue;
+
+      // Con quien jugó hace poco no aparece: la app no ofrece lo que después
+      // va a rechazar.
+      if ((await this.rematchCooldownDays(playerId, p.id)) !== null) continue;
 
       const occupied = await this.prisma.challenge.findFirst({
         where: {
@@ -390,6 +404,54 @@ export class ChallengeRulesService {
       where: { id: { in: [winnerId, loserId] } },
       data: { no_response_count: 0 },
     });
+  }
+
+  /**
+   * Último partido JUGADO entre dos jugadores, si fue dentro del período de
+   * espera. Devuelve los días que faltan, o null si ya puede volver a retarlo.
+   */
+  async rematchCooldownDays(
+    playerId: string,
+    opponentId: string,
+  ): Promise<number | null> {
+    const since = new Date(
+      Date.now() - REMATCH_COOLDOWN_DAYS * 24 * 60 * 60 * 1000,
+    );
+    const last = await this.prisma.challenge.findFirst({
+      where: {
+        status: 'completed',
+        winner_id: { not: null },
+        played_at: { gte: since },
+        OR: [
+          { challenger_id: playerId, challenged_id: opponentId },
+          { challenger_id: opponentId, challenged_id: playerId },
+        ],
+      },
+      orderBy: { played_at: 'desc' },
+      select: { played_at: true },
+    });
+    if (!last?.played_at) return null;
+
+    const transcurridos =
+      (Date.now() - last.played_at.getTime()) / (24 * 60 * 60 * 1000);
+    const faltan = Math.ceil(REMATCH_COOLDOWN_DAYS - transcurridos);
+    return faltan > 0 ? faltan : null;
+  }
+
+  /**
+   * REGLA: no repetir el mismo cruce antes de que pasen los días de espera.
+   * Empuja a variar de rival en vez de insistirle al mismo.
+   */
+  private async validateNotRecentOpponent(
+    challenger: Player,
+    challenged: Player,
+  ): Promise<void> {
+    const faltan = await this.rematchCooldownDays(challenger.id, challenged.id);
+    if (faltan === null) return;
+    throw new BadRequestException(
+      `Ya jugaste con ${challenged.name} hace poco. Puedes volver a desafiarlo en ` +
+        `${faltan} ${faltan === 1 ? 'día' : 'días'}.`,
+    );
   }
 
   // ───────────────── Desaires: rechazo y no-respuesta ─────────────────

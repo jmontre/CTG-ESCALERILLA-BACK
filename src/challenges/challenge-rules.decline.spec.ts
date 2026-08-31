@@ -101,7 +101,10 @@ describe('ChallengeRulesService — desaires', () => {
       updateMany: jest.fn(() => Promise.resolve({ count: 0 })),
     },
     rankingHistory: { create: jest.fn(() => Promise.resolve({})) },
-    challenge: { count: jest.fn(() => Promise.resolve(0)) },
+    challenge: {
+      count: jest.fn(() => Promise.resolve(0)),
+      findFirst: jest.fn((_args: any): Promise<any> => Promise.resolve(null)),
+    },
     $transaction: jest.fn((ops: Array<Promise<unknown>>) => Promise.all(ops)),
   };
 
@@ -296,6 +299,48 @@ describe('ChallengeRulesService — desaires', () => {
       seed(['Alfa', 'Beltrán']);
       await service.applyPostMatchStatus('Alfa', 'Beltrán');
       expect(ladder.get('Alfa')!.immune_until).toBeNull();
+    });
+  });
+
+  describe('rematchCooldownDays', () => {
+    const dias = (n: number) => new Date(Date.now() - n * 24 * 60 * 60 * 1000);
+
+    it('bloquea si jugaron hace menos de 5 días y dice cuántos faltan', async () => {
+      seed(['Alfa', 'Beltrán']);
+      prismaMock.challenge.findFirst.mockResolvedValue({ played_at: dias(2) });
+      await expect(
+        service.rematchCooldownDays('Alfa', 'Beltrán'),
+      ).resolves.toBe(3);
+    });
+
+    it('libera al cumplirse los 5 días', async () => {
+      seed(['Alfa', 'Beltrán']);
+      prismaMock.challenge.findFirst.mockResolvedValue(null);
+      await expect(
+        service.rematchCooldownDays('Alfa', 'Beltrán'),
+      ).resolves.toBeNull();
+    });
+
+    it('cuenta el cruce en cualquier dirección', async () => {
+      // El bloqueo aplica ganes o pierdas, y sin importar quién desafió.
+      seed(['Alfa', 'Beltrán']);
+      prismaMock.challenge.findFirst.mockResolvedValue({ played_at: dias(1) });
+      await service.rematchCooldownDays('Beltrán', 'Alfa');
+      const where = prismaMock.challenge.findFirst.mock.calls[0][0].where;
+      expect(where.OR).toEqual([
+        { challenger_id: 'Beltrán', challenged_id: 'Alfa' },
+        { challenger_id: 'Alfa', challenged_id: 'Beltrán' },
+      ]);
+      expect(where.status).toBe('completed');
+    });
+
+    it('solo mira partidos jugados, no rechazos ni no-respuestas', async () => {
+      seed(['Alfa', 'Beltrán']);
+      prismaMock.challenge.findFirst.mockResolvedValue({ played_at: dias(1) });
+      await service.rematchCooldownDays('Alfa', 'Beltrán');
+      const where = prismaMock.challenge.findFirst.mock.calls[0][0].where;
+      expect(where.status).toBe('completed');
+      expect(where.winner_id).toEqual({ not: null });
     });
   });
 
