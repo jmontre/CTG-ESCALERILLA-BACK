@@ -295,7 +295,18 @@ export class ChallengeRulesService {
   /**
    * REGLA 4: Aplicar inmunidad y vulnerabilidad post-partido
    */
-  async applyPostMatchStatus(winnerId: string, loserId: string) {
+  /**
+   * Inmunidad al ganador y vulnerabilidad al perdedor.
+   *
+   * `grantImmunity: false` para las victorias por W.O. (rechazo o no-respuesta):
+   * la inmunidad premia haber jugado y ganado, no que el rival no se presentara.
+   * El que desaira igual queda vulnerable — perdió el desafío.
+   */
+  async applyPostMatchStatus(
+    winnerId: string,
+    loserId: string,
+    { grantImmunity = true }: { grantImmunity?: boolean } = {},
+  ) {
     const winner = await this.prisma.player.findUnique({
       where: { id: winnerId },
     });
@@ -307,8 +318,10 @@ export class ChallengeRulesService {
       throw new BadRequestException('Jugador no encontrado');
     }
 
-    // Ganador obtiene inmunidad 24 hrs (EXCEPTO si es pos 1)
-    if (winner.position !== 1) {
+    // Ganador obtiene inmunidad 24 hrs (EXCEPTO si es pos 1 o ganó por W.O.)
+    if (!grantImmunity) {
+      console.log(`🚫 ${winner.name} ganó por W.O. — SIN inmunidad`);
+    } else if (winner.position !== 1) {
       await this.prisma.player.update({
         where: { id: winnerId },
         data: {

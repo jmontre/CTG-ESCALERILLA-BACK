@@ -106,9 +106,11 @@ export class ChallengesCronService {
         challenge.challenged_id,
         'challenge_not_answered',
       );
+      // Sin inmunidad: ganar porque el otro no respondió no es haber jugado.
       await this.rules.applyPostMatchStatus(
         challenge.challenger_id,
         challenge.challenged_id,
+        { grantImmunity: false },
       );
       await this.rules.recordWalkoverWin(challenge.challenger_id);
 
