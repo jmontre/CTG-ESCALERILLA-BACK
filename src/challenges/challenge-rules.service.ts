@@ -4,6 +4,7 @@ import { Player } from '@prisma/client';
 import { add } from 'date-fns';
 import {
   getLevel,
+  canChallengePosition,
   categoryOf,
   categoryBounds,
   nextCategoryDown,
@@ -20,38 +21,53 @@ export class ChallengeRulesService {
   constructor(private prisma: PrismaService) {}
 
   /**
-   * HELPER: nivel según posición. Delega en common/ladder.ts, que es la
-   * definición única (antes había una copia acá y otra en el frontend).
+   * Último puesto ocupado de la escalerilla. Los niveles son las filas de la
+   * pirámide, y el reparto de las filas de la última categoría depende de
+   * cuántos jugadores hay (no tiene tope).
    */
-  getLevel(position: number): number {
-    return getLevel(position);
+  async ladderSize(): Promise<number> {
+    const last = await this.prisma.player.findFirst({
+      where: { position: { gte: 1, lt: 1000 } },
+      orderBy: { position: 'desc' },
+      select: { position: true },
+    });
+    return last?.position ?? 0;
+  }
+
+  /**
+   * HELPER: nivel (fila de la pirámide) según posición. Delega en
+   * common/ladder.ts, que es la definición única compartida con el frontend.
+   */
+  getLevel(position: number, ladderSize: number): number {
+    return getLevel(position, ladderSize);
   }
 
   /**
    * REGLA 1: Puede desafiar mismo nivel (si está adelante) O 1 nivel arriba
    */
-  private validateLevel(challenger: Player, challenged: Player): void {
-    const challengerLevel = this.getLevel(challenger.position);
-    const challengedLevel = this.getLevel(challenged.position);
-
-    // Mismo nivel: solo si el desafiado está adelante (posición menor)
-    if (challengerLevel === challengedLevel) {
-      if (challenged.position >= challenger.position) {
-        throw new BadRequestException(
-          `No puedes desafiar a ${challenged.name}. Solo puedes desafiar jugadores adelante tuyo en el mismo nivel.`,
-        );
-      }
-      // Válido: mismo nivel y desafiado está adelante
+  private validateLevel(
+    challenger: Player,
+    challenged: Player,
+    ladderSize: number,
+  ): void {
+    if (
+      canChallengePosition(challenger.position, challenged.position, ladderSize)
+    )
       return;
-    }
 
-    // Diferente nivel: solo 1 nivel arriba
-    if (challengedLevel !== challengerLevel - 1) {
+    const mine = this.getLevel(challenger.position!, ladderSize);
+    const theirs = this.getLevel(challenged.position!, ladderSize);
+
+    // Mismo nivel pero el desafiado está detrás.
+    if (mine === theirs) {
       throw new BadRequestException(
-        `Solo puedes desafiar jugadores del nivel inmediatamente superior. ` +
-          `Tú estás en nivel ${challengerLevel}, ${challenged.name} está en nivel ${challengedLevel}.`,
+        `No puedes desafiar a ${challenged.name}. En tu misma fila solo puedes desafiar a quien esté por delante tuyo.`,
       );
     }
+    throw new BadRequestException(
+      `Solo puedes desafiar a jugadores de tu fila o de la fila inmediatamente superior. ` +
+        `Tú estás en la fila ${mine} y ${challenged.name} en la ${theirs}.`,
+    );
   }
 
   /**
@@ -125,8 +141,8 @@ export class ChallengeRulesService {
     // NUEVA REGLA: Verificar vulnerabilidad del challenger
     this.validateNotVulnerable(challenger);
 
-    // REGLA 1: Verificar niveles
-    this.validateLevel(challenger, challenged);
+    // REGLA 1: Verificar niveles (= filas de la pirámide)
+    this.validateLevel(challenger, challenged, await this.ladderSize());
 
     // REGLA 2: Verificar que ninguno esté ocupado
     await this.validateNotOccupied(challengerId, challenger.name);
@@ -162,38 +178,30 @@ export class ChallengeRulesService {
       return []; // No puede desafiar a nadie si está ocupado
     }
 
-    const playerLevel = this.getLevel(player.position);
-    const targetLevel = playerLevel - 1;
+    const size = await this.ladderSize();
 
-    if (targetLevel < 1) {
-      return []; // Está en nivel 1, no puede desafiar a nadie
-    }
-
-    // Obtener todos los jugadores del nivel superior
-    const allPlayers = await this.prisma.player.findMany({
+    // Misma regla que valida la creación del desafío y que dibuja la zona de
+    // desafío en el frontend: tu fila (hacia adelante) o la fila de arriba.
+    // Antes acá solo salía la fila superior, así que la lista del backend y la
+    // que ve el socio no coincidían.
+    const candidates = await this.prisma.player.findMany({
+      where: { position: { gte: 1, lt: 1000 } },
       orderBy: { position: 'asc' },
     });
 
-    // Tipar correctamente el array
     const availablePlayers: Player[] = [];
+    for (const p of candidates) {
+      if (!canChallengePosition(player.position, p.position, size)) continue;
 
-    for (const p of allPlayers) {
-      if (this.getLevel(p.position) === targetLevel) {
-        // Verificar que no esté ocupado
-        const occupied = await this.prisma.challenge.findFirst({
-          where: {
-            OR: [{ challenger_id: p.id }, { challenged_id: p.id }],
-            status: { in: ['pending', 'accepted'] },
-          },
-        });
+      const occupied = await this.prisma.challenge.findFirst({
+        where: {
+          OR: [{ challenger_id: p.id }, { challenged_id: p.id }],
+          status: { in: ['pending', 'accepted'] },
+        },
+      });
+      const hasImmunity = p.immune_until && p.immune_until > new Date();
 
-        // Verificar que no tenga inmunidad
-        const hasImmunity = p.immune_until && p.immune_until > new Date();
-
-        if (!occupied && !hasImmunity) {
-          availablePlayers.push(p);
-        }
-      }
+      if (!occupied && !hasImmunity) availablePlayers.push(p);
     }
 
     return availablePlayers;
