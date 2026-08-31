@@ -8,10 +8,7 @@ import {
   Request,
 } from '@nestjs/common';
 import { ChallengesService } from './challenges.service';
-
-class CreateChallengeDto {
-  challenged_id: string;
-}
+import { CreateChallengeDto } from './dto/create-challenge.dto';
 
 @Controller('challenges')
 export class ChallengesController {
@@ -23,9 +20,6 @@ export class ChallengesController {
    */
   @Post()
   async create(@Body() dto: CreateChallengeDto, @Request() req: any) {
-    if (!dto.challenged_id) {
-      throw new BadRequestException('challenged_id es requerido');
-    }
     const challengerId = await this.challengesService.getPlayerIdFromUserId(
       req.user.sub,
     );
