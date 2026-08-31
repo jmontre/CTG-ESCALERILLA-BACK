@@ -167,6 +167,9 @@ export class PlayersService {
   async getAvailableChallenges(id: string) {
     const availablePlayers =
       await this.challengeRules.getAvailableChallenges(id);
+    // El nivel es la fila de la pirámide, y el reparto de filas de la última
+    // categoría depende de cuántos jugadores hay.
+    const size = await this.challengeRules.ladderSize();
 
     return {
       player_id: id,
@@ -174,7 +177,7 @@ export class PlayersService {
         id: p.id,
         name: p.name,
         position: p.position,
-        level: this.challengeRules.getLevel(p.position),
+        level: this.challengeRules.getLevel(p.position!, size),
         wins: p.wins,
         losses: p.losses,
       })),
