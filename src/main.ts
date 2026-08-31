@@ -6,6 +6,14 @@ import { ChileLogger } from './common/chile-logger';
 import * as bodyParser from 'body-parser';
 import helmet from 'helmet';
 
+/**
+ * Marca que este proceso es el servidor. `EmailService` lo exige para enviar:
+ * los scripts sueltos nunca pasan por acá, así que no pueden mandarle correos
+ * a los socios aunque hereden la API key real desde `.env` (Prisma lo carga
+ * dentro de process.env al inicializarse).
+ */
+process.env.CTG_SERVER_PROCESS = 'true';
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     logger: new ChileLogger(),
