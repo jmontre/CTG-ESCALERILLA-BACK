@@ -15,27 +15,34 @@ export class EmailService {
   private fromEmail = 'CTG Escalerilla <escalerilla@clubdetenisgraneros.cl>';
 
   /**
-   * Los correos salen solo en producción, o cuando se piden explícitamente con
-   * EMAIL_ENABLED=true.
+   * Quién puede mandar correos.
    *
-   * Sin esta guarda, cualquier script corrido a mano contra la base de dev le
-   * manda correos DE VERDAD a los socios: Prisma carga `.env` dentro de
-   * `process.env` al inicializarse, y ese archivo trae la API key real de
-   * Resend aunque el DATABASE_URL apunte a dev. Ya pasó una vez — una prueba
-   * end-to-end avisó a tres socios de desafíos que no existían.
+   * El problema que esto evita: Prisma carga `.env` dentro de `process.env` al
+   * inicializarse, y ese archivo trae la API key real de Resend. O sea que
+   * cualquier script corrido a mano contra la base de dev le manda correos DE
+   * VERDAD a los socios. Ya pasó una vez: una prueba end-to-end avisó a tres
+   * socios de desafíos que no existían.
    *
-   * Mismo patrón que WHATSAPP_ENABLED en whatsapp.service.ts.
+   * La condición NO es `NODE_ENV === 'production'`. Railway inyecta las
+   * variables directamente y no hay garantía de que NODE_ENV esté seteada; si
+   * no lo estuviera, esa regla apagaría los correos en producción sin que
+   * nadie se diera cuenta. La condición es "soy el servidor", que main.ts
+   * marca al arrancar y ningún script puede fingir por accidente.
+   *
+   *   EMAIL_ENABLED=false → nunca envía (palanca para apagar sin desplegar)
+   *   EMAIL_ENABLED=true  → envía siempre (útil para probar a propósito)
+   *   sin definir         → envía solo si el proceso es el servidor
    */
   private get enabled(): boolean {
-    if (process.env.EMAIL_ENABLED === 'true') return true;
     if (process.env.EMAIL_ENABLED === 'false') return false;
-    const isProd = process.env.NODE_ENV === 'production';
-    if (!isProd) {
+    if (process.env.EMAIL_ENABLED === 'true') return true;
+    const isServer = process.env.CTG_SERVER_PROCESS === 'true';
+    if (!isServer) {
       console.log(
-        '📭 Email desactivado (NODE_ENV != production). Usa EMAIL_ENABLED=true para forzarlo.',
+        '📭 Email omitido: este proceso no es el servidor. Usa EMAIL_ENABLED=true para forzarlo.',
       );
     }
-    return isProd;
+    return isServer;
   }
 
   async sendChallengeNotification(
