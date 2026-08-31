@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { AchievementsService } from '../achievements/achievements.service';
 import { categoryOf, CategoryScheme } from '../common/ladder';
+import { buildPeriods } from '../common/periods';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ACHIEVEMENTS_BY_CODE } from '../achievements/achievements.catalog';
 
@@ -34,6 +35,14 @@ export class SeasonsService {
       position: { gte: 1, lt: 1000 },
       user: { is_admin: false },
     };
+  }
+
+  /** Períodos (todo / año / temporada) con sus rangos. Ver common/periods.ts. */
+  async periods() {
+    const seasons = await this.prisma.season.findMany({
+      orderBy: { started_at: 'asc' },
+    });
+    return buildPeriods(seasons);
   }
 
   async findAll() {
