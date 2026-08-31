@@ -91,38 +91,92 @@ export function categoryRank(
   return SCHEMES[scheme].findIndex((c) => c.category === category) + 1;
 }
 
-// ──────────────────────────── Niveles ─────────────────────────────
+// ─────────────────── Filas de la pirámide = niveles ───────────────────
 
 /**
- * Niveles de desafío. Un jugador puede desafiar a su mismo nivel (solo a quien
- * esté adelante) o al nivel inmediatamente superior.
+ * Las filas que se dibujan en la escalerilla SON los niveles de desafío.
  *
- * Los primeros niveles son fijos y cierran justo en los bordes de categoría.
- * Desde el puesto 29 se generan en bloques de 5, así la categoría C puede
- * crecer sin tocar el código.
+ * Antes eran dos cosas distintas: una tabla de niveles fija por un lado y un
+ * generador de filas por otro. No calzaban, así que la app ofrecía rivales que
+ * visualmente estaban dos filas más arriba — el socio veía la pirámide y la
+ * zona de desafío contradiciéndose. Una sola definición evita eso.
+ *
+ * Anchos crecientes, y lo que sobra al final para no dejar una fila de uno o
+ * dos sueltos. Se genera en vez de estar escrita a mano porque la última
+ * categoría no tiene tope: la escalerilla puede tener 46 jugadores este
+ * semestre y 60 el próximo.
  */
-const FIXED_LEVELS: Array<{ upTo: number }> = [
-  { upTo: 1 }, //  N1: #1
-  { upTo: 4 }, //  N2: #2-4
-  { upTo: 9 }, //  N3: #5-9
-  { upTo: 14 }, // N4: #10-14   ← cierra categoría A
-  { upTo: 19 }, // N5: #15-19
-  { upTo: 24 }, // N6: #20-24
-  { upTo: 28 }, // N7: #25-28   ← cierra categoría B
-];
+export function pyramidRows(from: number, to: number): number[][] {
+  if (to < from) return [];
+  const positions: number[] = [];
+  for (let p = from; p <= to; p++) positions.push(p);
 
-/** Primer puesto de la zona de bloques automáticos (categoría C). */
-const OPEN_ZONE_FROM = 29;
-const OPEN_ZONE_BLOCK = 5;
-
-export function getLevel(position: number | null | undefined): number {
-  if (!position || position < 1) return FIXED_LEVELS.length + 1;
-
-  for (let i = 0; i < FIXED_LEVELS.length; i++) {
-    if (position <= FIXED_LEVELS[i].upTo) return i + 1;
+  const rows: number[][] = [];
+  // El #1 de la escalerilla va solo, en la cima.
+  let width = from === 1 ? 1 : 3;
+  let i = 0;
+  while (i < positions.length) {
+    const remaining = positions.length - i;
+    const size = remaining <= width + 2 ? remaining : width;
+    rows.push(positions.slice(i, i + size));
+    i += size;
+    width = Math.min(width + 1, 5);
   }
+  return rows;
+}
 
-  // Bloques de 5 desde OPEN_ZONE_FROM, sin tope superior.
-  const offset = position - OPEN_ZONE_FROM;
-  return FIXED_LEVELS.length + 1 + Math.floor(offset / OPEN_ZONE_BLOCK);
+/** Filas de una categoría, acotadas al final real de la escalerilla. */
+export function categoryRows(
+  category: string,
+  ladderSize: number,
+  scheme: CategoryScheme = DEFAULT_CATEGORY_SCHEME,
+): number[][] {
+  const bounds = categoryBounds(category, scheme);
+  if (!bounds) return [];
+  const last = Math.min(bounds.to ?? ladderSize, ladderSize);
+  return pyramidRows(bounds.from, last);
+}
+
+/** Todas las filas de la escalerilla, de la cima al fondo. */
+export function ladderRows(
+  ladderSize: number,
+  scheme: CategoryScheme = DEFAULT_CATEGORY_SCHEME,
+): number[][] {
+  return categoriesOf(scheme).flatMap((c) =>
+    categoryRows(c, ladderSize, scheme),
+  );
+}
+
+/**
+ * Nivel de un puesto: el número de la fila en la que cae (1 = la cima).
+ *
+ * Necesita el tamaño de la escalerilla porque la última categoría no tiene
+ * tope, y de eso depende cómo se reparten sus filas.
+ */
+export function getLevel(
+  position: number | null | undefined,
+  ladderSize: number,
+  scheme: CategoryScheme = DEFAULT_CATEGORY_SCHEME,
+): number {
+  if (!position || position < 1) return 0;
+  const rows = ladderRows(Math.max(ladderSize, position), scheme);
+  const index = rows.findIndex((row) => row.includes(position));
+  return index === -1 ? 0 : index + 1;
+}
+
+/**
+ * ¿`target` es un rival válido para quien está en `myPosition`?
+ * Misma fila y por delante, o la fila inmediatamente superior.
+ */
+export function canChallengePosition(
+  myPosition: number | null | undefined,
+  target: number | null | undefined,
+  ladderSize: number,
+  scheme: CategoryScheme = DEFAULT_CATEGORY_SCHEME,
+): boolean {
+  if (!myPosition || !target || target >= myPosition) return false;
+  const mine = getLevel(myPosition, ladderSize, scheme);
+  const theirs = getLevel(target, ladderSize, scheme);
+  if (mine === 0 || theirs === 0) return false;
+  return theirs === mine || theirs === mine - 1;
 }

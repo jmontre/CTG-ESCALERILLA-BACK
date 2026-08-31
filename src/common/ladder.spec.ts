@@ -5,6 +5,8 @@ import {
   categoryRank,
   categoriesOf,
   getLevel,
+  ladderRows,
+  canChallengePosition,
 } from './ladder';
 
 describe('categorías', () => {
@@ -62,49 +64,84 @@ describe('categorías', () => {
   });
 });
 
-describe('niveles', () => {
-  it('respeta la tabla fija y cierra en los bordes de categoría', () => {
-    expect(getLevel(1)).toBe(1);
-    expect(getLevel(2)).toBe(2);
-    expect(getLevel(4)).toBe(2);
-    expect(getLevel(5)).toBe(3);
-    expect(getLevel(9)).toBe(3);
-    expect(getLevel(10)).toBe(4);
-    expect(getLevel(14)).toBe(4); // fin de categoría A
-    expect(getLevel(15)).toBe(5);
-    expect(getLevel(19)).toBe(5);
-    expect(getLevel(20)).toBe(6);
-    expect(getLevel(24)).toBe(6);
-    expect(getLevel(25)).toBe(7);
-    expect(getLevel(28)).toBe(7); // fin de categoría B
+describe('filas de la pirámide (= niveles)', () => {
+  // La escalerilla real del 2do semestre 2026.
+  const N = 46;
+
+  it('reparte las filas como se dibujan en la pantalla', () => {
+    expect(ladderRows(N)).toEqual([
+      [1],
+      [2, 3],
+      [4, 5, 6],
+      [7, 8, 9, 10],
+      [11, 12, 13, 14], //  ← cierra categoría A
+      [15, 16, 17],
+      [18, 19, 20, 21],
+      [22, 23, 24, 25, 26, 27, 28], // ← cierra categoría B
+      [29, 30, 31],
+      [32, 33, 34, 35],
+      [36, 37, 38, 39, 40],
+      [41, 42, 43, 44, 45, 46],
+    ]);
   });
 
-  it('desde el #29 genera bloques de 5 sin tope', () => {
-    expect(getLevel(29)).toBe(8);
-    expect(getLevel(33)).toBe(8);
-    expect(getLevel(34)).toBe(9);
-    expect(getLevel(38)).toBe(9);
-    expect(getLevel(39)).toBe(10);
-    expect(getLevel(43)).toBe(10);
-    expect(getLevel(44)).toBe(11);
-    expect(getLevel(48)).toBe(11);
-    // La escalerilla puede crecer sin tocar el código.
-    expect(getLevel(49)).toBe(12);
-    expect(getLevel(100)).toBe(22); // (100-29)/5 = 14 bloques sobre el N8
-  });
-
-  it('los niveles nunca retroceden al bajar en la escalerilla', () => {
-    for (let pos = 1; pos < 200; pos++) {
-      expect(getLevel(pos + 1)).toBeGreaterThanOrEqual(getLevel(pos));
+  it('cubre todos los puestos, sin repetir ni saltarse ninguno', () => {
+    for (const size of [12, 20, 28, 46, 60]) {
+      const flat = ladderRows(size).flat();
+      expect(flat).toEqual(Array.from({ length: size }, (_, i) => i + 1));
     }
   });
 
-  it('un jugador siempre puede desafiar a alguien salvo en el nivel 1', () => {
-    // La regla es "mismo nivel adelante, o un nivel arriba": para que sea
-    // jugable, cada nivel sobre el 1 debe tener un nivel inmediatamente
-    // superior existente.
-    for (let pos = 2; pos < 200; pos++) {
-      expect(getLevel(pos) - 1).toBeGreaterThanOrEqual(1);
+  it('el nivel es el número de fila', () => {
+    expect(getLevel(1, N)).toBe(1);
+    expect(getLevel(3, N)).toBe(2);
+    expect(getLevel(10, N)).toBe(4);
+    expect(getLevel(11, N)).toBe(5);
+    expect(getLevel(17, N)).toBe(6);
+    expect(getLevel(46, N)).toBe(12);
+  });
+
+  it('el #17 llega hasta el #11, no hasta el #10', () => {
+    // Caso reportado desde la app: el #17 está en la fila [15,16,17] y la fila
+    // de arriba es [11,12,13,14]. El #10 está DOS filas más arriba, así que la
+    // zona de desafío no puede ofrecerlo.
+    const alcanzables = [];
+    for (let p = 1; p <= N; p++)
+      if (canChallengePosition(17, p, N)) alcanzables.push(p);
+    expect(alcanzables).toEqual([11, 12, 13, 14, 15, 16]);
+    expect(canChallengePosition(17, 10, N)).toBe(false);
+  });
+
+  it('no se puede desafiar hacia atrás ni a uno mismo', () => {
+    expect(canChallengePosition(17, 18, N)).toBe(false);
+    expect(canChallengePosition(17, 17, N)).toBe(false);
+  });
+
+  it('el #1 no puede desafiar a nadie', () => {
+    const alcanzables = [];
+    for (let p = 1; p <= N; p++)
+      if (canChallengePosition(1, p, N)) alcanzables.push(p);
+    expect(alcanzables).toEqual([]);
+  });
+
+  it('se puede desafiar cruzando el borde de categoría', () => {
+    // El #15 abre la categoría B y su fila de arriba es el final de la A.
+    expect(canChallengePosition(15, 14, N)).toBe(true);
+    expect(canChallengePosition(15, 11, N)).toBe(true);
+    expect(canChallengePosition(15, 10, N)).toBe(false);
+  });
+
+  it('todos menos el #1 tienen al menos un rival posible', () => {
+    for (let yo = 2; yo <= N; yo++) {
+      const alcanzables = [];
+      for (let p = 1; p <= N; p++)
+        if (canChallengePosition(yo, p, N)) alcanzables.push(p);
+      expect(alcanzables.length).toBeGreaterThan(0);
     }
+  });
+
+  it('la escalerilla puede crecer sin tocar el código', () => {
+    expect(ladderRows(60).flat()).toHaveLength(60);
+    expect(getLevel(60, 60)).toBeGreaterThan(0);
   });
 });
