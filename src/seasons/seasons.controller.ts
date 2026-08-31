@@ -14,6 +14,16 @@ export class SeasonsController {
     return this.seasons.findAll();
   }
 
+  /**
+   * Períodos disponibles con sus rangos de fecha, para que las pantallas que
+   * filtran localmente (el fixture del club) usen los mismos cortes que el
+   * historial personal, en vez de recalcularlos por su cuenta.
+   */
+  @Get('periods')
+  periods() {
+    return this.seasons.periods();
+  }
+
   /** Resumen de cierre para el modal del jugador logueado. */
   @Get('me/summary')
   summary(@Req() req: AuthedRequest) {
