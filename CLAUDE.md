@@ -163,7 +163,7 @@ const claimed = await this.prisma.challenge.updateMany({
 if (claimed.count === 0) throw new BadRequestException('Ya no está pendiente');
 ```
 
-Implementado en `ChallengesService.reject`; aplicar el mismo patrón si se tocan otras transiciones.
+Implementado en `ChallengesService.reject` y `accept`, en las dos ramas de `processDoubleConfirmation` (resultado confirmado y disputa) y en los tres flujos del cron (`handleNotAccepted`, `handleNotPlayed`, `handleNotConfirmed`). **Toda transición que mueva posiciones o notifique va con claim**: sin él, dos requests que leyeron la fila antes de que cambiara el status corren el corrimiento, las stats y las notificaciones una vez cada una (pasó en producción: un resultado procesado 5 veces, con 5 tandas de WhatsApp). Tests: `challenges.result.spec.ts`.
 
 ---
 
