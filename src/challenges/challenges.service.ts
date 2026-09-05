@@ -397,6 +397,16 @@ export class ChallengesService {
 
     const isFirstResult =
       !challenge.challenger_result && !challenge.challenged_result;
+    // Reenvío idéntico del propio resultado (doble click, request repetida):
+    // no vuelve a avisarle al rival, ya le llegó el aviso la primera vez.
+    // Si corrigió el score sí se avisa: cambió lo que el rival tiene que confirmar.
+    const previous = (
+      isChallenger ? challenge.challenger_result : challenge.challenged_result
+    ) as { winnerId: string; score: string } | null;
+    const isResubmitOfSame =
+      previous !== null &&
+      previous.winnerId === result.winnerId &&
+      previous.score === result.score;
     await this.prisma.challenge.update({
       where: { id: challengeId },
       data: {
@@ -416,7 +426,10 @@ export class ChallengesService {
     });
     if (!updated) throw new BadRequestException('Error al actualizar desafío');
 
-    if (!updated.challenger_result || !updated.challenged_result) {
+    if (
+      !isResubmitOfSame &&
+      (!updated.challenger_result || !updated.challenged_result)
+    ) {
       const other = isChallenger ? updated.challenged : updated.challenger;
       const current = isChallenger ? updated.challenger : updated.challenged;
       const submittedResult = isChallenger
@@ -746,6 +759,25 @@ export class ChallengesService {
           ? challenge.challenger.position
           : challenge.challenged.position;
 
+      // Claim atómico: el UPDATE condicionado por status es la exclusión mutua.
+      // Sin esto, dos requests que leyeron la fila todavía 'accepted' (doble
+      // click, reintento del cliente, colisión con el cron) corren el
+      // corrimiento y las notificaciones una vez cada una.
+      const now = new Date();
+      const claimed = await this.prisma.challenge.updateMany({
+        where: { id: challengeId, status: 'accepted' },
+        data: {
+          status: 'completed',
+          winner_id: winnerId,
+          final_score: result1.score,
+          results_match: true,
+          played_at: now,
+          resolved_at: now,
+        },
+      });
+      if (claimed.count === 0)
+        return { message: 'El resultado de este desafío ya fue procesado.' };
+
       try {
         await this.rules.processWin(challengeId, winnerId, loserId);
         await this.rules.applyPostMatchStatus(winnerId, loserId);
@@ -758,18 +790,6 @@ export class ChallengesService {
           score: result1.score,
           oldWinnerPosition,
           oldLoserPosition,
-        });
-
-        await this.prisma.challenge.update({
-          where: { id: challengeId },
-          data: {
-            status: 'completed',
-            winner_id: winnerId,
-            final_score: result1.score,
-            results_match: true,
-            played_at: new Date(),
-            resolved_at: new Date(),
-          },
         });
 
         // Liberar la reserva del desafío
@@ -849,13 +869,34 @@ export class ChallengesService {
         };
       } catch (error) {
         console.error('❌ Error en processDoubleConfirmation:', error);
+        // Soltar el claim: si el procesamiento falló, el desafío vuelve a
+        // 'accepted' para poder reintentarlo (si no, quedaría "completado"
+        // sin corrimiento y nadie podría volver a mandar el resultado).
+        await this.prisma.challenge
+          .updateMany({
+            where: { id: challengeId, status: 'completed' },
+            data: {
+              status: 'accepted',
+              winner_id: null,
+              final_score: null,
+              results_match: null,
+              played_at: null,
+              resolved_at: null,
+            },
+          })
+          .catch((e) => console.error('⚠️ Error soltando el claim:', e));
         throw error;
       }
     } else {
-      await this.prisma.challenge.update({
-        where: { id: challengeId },
+      // Mismo claim atómico que en la rama de resultado coincidente: una sola
+      // request marca la disputa y avisa.
+      const claimed = await this.prisma.challenge.updateMany({
+        where: { id: challengeId, status: 'accepted' },
         data: { status: 'disputed' },
       });
+      if (claimed.count === 0)
+        return { message: 'El resultado de este desafío ya fue procesado.' };
+
       this.notifyAsync(async () => {
         const message = `🎾 *Club de Tenis Graneros*\n\n⚠️ Los resultados no coinciden.\n\nUn administrador revisará el caso.\n\n${challenge.challenger.name} dice: ${result1.score}\n${challenge.challenged.name} dice: ${result2.score}`;
         if (challenge.challenger.phone) {

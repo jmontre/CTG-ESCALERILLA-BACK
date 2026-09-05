@@ -33,8 +33,16 @@ export class ChallengesCronService {
     private notifications: NotificationsService,
   ) {}
 
+  /** Evita que una corrida manual (POST /cron/run) se encime con la programada. */
+  private corriendo = false;
+
   @Cron(EVERY_6_HOURS)
   async handleExpiredChallenges() {
+    if (this.corriendo) {
+      this.logger.warn('⏭️  Ya hay una verificación en curso, se omite esta.');
+      return;
+    }
+    this.corriendo = true;
     this.logger.log('⏰ Iniciando verificación de desafíos expirados...');
 
     const now = new Date();
@@ -53,6 +61,8 @@ export class ChallengesCronService {
       this.logger.log(`   - No confirmados: ${notConfirmed}`);
     } catch (error) {
       this.logger.error('❌ Error en cron job:', error);
+    } finally {
+      this.corriendo = false;
     }
   }
 
@@ -64,11 +74,8 @@ export class ChallengesCronService {
 
     const scheme = await this.activeCategoryScheme();
 
+    let procesados = 0;
     for (const challenge of expired) {
-      this.logger.warn(
-        `⏱️  Desafío expirado (no aceptado): ${challenge.challenger.name} vs ${challenge.challenged.name}`,
-      );
-
       // Un desafiante que viene de ganar por W.O. necesita 3 partidos jugados
       // de verdad para que otro le cuente. Si no los tiene, el desafío se
       // anula: no se mueve nadie y al ausente tampoco le suma.
@@ -76,14 +83,17 @@ export class ChallengesCronService {
         challenge.challenger_id,
       );
       if (!claimable) {
-        await this.prisma.challenge.update({
-          where: { id: challenge.id },
+        // Claim atómico: si otra corrida ya lo resolvió, este ciclo no toca nada.
+        const anulado = await this.prisma.challenge.updateMany({
+          where: { id: challenge.id, status: 'pending' },
           data: {
             status: 'cancelled',
             resolved_at: now,
             final_score: 'W.O. no válido (3 partidos pendientes)',
           },
         });
+        if (anulado.count === 0) continue;
+        procesados++;
         this.logger.log(
           `↩️  W.O. anulado: ${challenge.challenger.name} aún no juega 3 partidos desde su último W.O.`,
         );
@@ -97,6 +107,18 @@ export class ChallengesCronService {
         });
         continue;
       }
+
+      // Claim atómico antes de mover a nadie (ver processDoubleConfirmation).
+      const claimed = await this.prisma.challenge.updateMany({
+        where: { id: challenge.id, status: 'pending' },
+        data: { status: 'expired_not_accepted', resolved_at: now },
+      });
+      if (claimed.count === 0) continue;
+      procesados++;
+
+      this.logger.warn(
+        `⏱️  Desafío expirado (no aceptado): ${challenge.challenger.name} vs ${challenge.challenged.name}`,
+      );
 
       // No responder tiene el mismo efecto que rechazar: el ausente baja al
       // puesto del desafiante y los del medio suben uno.
@@ -119,11 +141,6 @@ export class ChallengesCronService {
         challenge.challenged_id,
         scheme,
       );
-
-      await this.prisma.challenge.update({
-        where: { id: challenge.id },
-        data: { status: 'expired_not_accepted', resolved_at: now },
-      });
 
       // Notificar al grupo
       try {
@@ -170,7 +187,7 @@ export class ChallengesCronService {
       );
     }
 
-    return expired.length;
+    return procesados;
   }
 
   /** Esquema de categorías de la temporada abierta (ver common/ladder.ts). */
@@ -189,17 +206,22 @@ export class ChallengesCronService {
       include: { challenger: true, challenged: true },
     });
 
+    let procesados = 0;
     for (const challenge of expired) {
+      // Claim atómico antes de penalizar: dos corridas del cron encimadas
+      // (o dos réplicas) no pueden castigar dos veces el mismo desafío.
+      const claimed = await this.prisma.challenge.updateMany({
+        where: { id: challenge.id, status: 'accepted' },
+        data: { status: 'expired_not_played', resolved_at: now },
+      });
+      if (claimed.count === 0) continue;
+      procesados++;
+
       this.logger.warn(
         `⏱️  Desafío expirado (no jugado): ${challenge.challenger.name} vs ${challenge.challenged.name}`,
       );
 
       await this.penalizeBothPlayers(challenge);
-
-      await this.prisma.challenge.update({
-        where: { id: challenge.id },
-        data: { status: 'expired_not_played', resolved_at: now },
-      });
 
       // Notificar al grupo
       try {
@@ -223,7 +245,7 @@ export class ChallengesCronService {
       );
     }
 
-    return expired.length;
+    return procesados;
   }
 
   private async handleNotConfirmed(now: Date): Promise<number> {
@@ -269,6 +291,27 @@ export class ChallengesCronService {
           ? challenge.challenged_id
           : challenge.challenger_id;
 
+      // Claim atómico antes de tocar nada: si el segundo jugador mandó su
+      // resultado justo ahora, la request ya se llevó el desafío y el cron no
+      // debe volver a correr el corrimiento ni a notificar.
+      const claimed = await this.prisma.challenge.updateMany({
+        where: { id: challenge.id, status: 'accepted' },
+        data: {
+          status: 'completed',
+          winner_id: winnerId,
+          final_score: confirmedResult.score,
+          results_match: false,
+          played_at: now,
+          resolved_at: now,
+        },
+      });
+      if (claimed.count === 0) {
+        this.logger.log(
+          `↩️  ${challenge.challenger.name} vs ${challenge.challenged.name}: ya lo procesó otro flujo`,
+        );
+        continue;
+      }
+
       await this.rules.processWin(challenge.id, winnerId, loserId);
       await this.rules.applyPostMatchStatus(winnerId, loserId);
       await this.rules.updateStats(winnerId, loserId);
@@ -286,18 +329,6 @@ export class ChallengesCronService {
           challenge.challenger_id === loserId
             ? challenge.challenger.position
             : challenge.challenged.position,
-      });
-
-      await this.prisma.challenge.update({
-        where: { id: challenge.id },
-        data: {
-          status: 'completed',
-          winner_id: winnerId,
-          final_score: confirmedResult.score,
-          results_match: false,
-          played_at: now,
-          resolved_at: now,
-        },
       });
 
       // Notificar al grupo
