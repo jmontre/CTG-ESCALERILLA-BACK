@@ -91,7 +91,9 @@ describe('MasterService.findByCategory', () => {
       masterSeason: { findFirst: jest.fn().mockResolvedValue({ id: 's1' }) },
       season: {
         findFirst: jest.fn().mockResolvedValue(ladderSeason),
-        findUnique: jest.fn().mockResolvedValue({ ...ladderSeason, id: 'temp-1', slug: '2026-1' }),
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ ...ladderSeason, id: 'temp-1', slug: '2026-1' }),
       },
     };
     return { service: new MasterService(prisma), prisma };

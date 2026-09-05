@@ -25,7 +25,12 @@ export function parseSeasonSlug(slug: string): SeasonNaming | null {
   if (!match) return null;
   const year = Number(match[1]);
   const semester = Number(match[2]) as 1 | 2;
-  return { slug: `${year}-${semester}`, name: seasonName(year, semester), year, semester };
+  return {
+    slug: `${year}-${semester}`,
+    name: seasonName(year, semester),
+    year,
+    semester,
+  };
 }
 
 export function seasonName(year: number, semester: 1 | 2): string {
@@ -37,11 +42,19 @@ export function seasonName(year: number, semester: 1 | 2): string {
  * siguiente. Si el slug actual no es parseable (una temporada creada a mano
  * con otro formato), cae en el semestre que corresponde a `today`.
  */
-export function nextSeason(currentSlug: string, today = new Date()): SeasonNaming {
+export function nextSeason(
+  currentSlug: string,
+  today = new Date(),
+): SeasonNaming {
   const current = parseSeasonSlug(currentSlug);
   if (!current) return seasonForDate(today);
   return current.semester === 1
-    ? { slug: `${current.year}-2`, name: seasonName(current.year, 2), year: current.year, semester: 2 }
+    ? {
+        slug: `${current.year}-2`,
+        name: seasonName(current.year, 2),
+        year: current.year,
+        semester: 2,
+      }
     : {
         slug: `${current.year + 1}-1`,
         name: seasonName(current.year + 1, 1),
@@ -54,5 +67,10 @@ export function nextSeason(currentSlug: string, today = new Date()): SeasonNamin
 export function seasonForDate(date: Date): SeasonNaming {
   const year = date.getFullYear();
   const semester: 1 | 2 = date.getMonth() < 6 ? 1 : 2;
-  return { slug: `${year}-${semester}`, name: seasonName(year, semester), year, semester };
+  return {
+    slug: `${year}-${semester}`,
+    name: seasonName(year, semester),
+    year,
+    semester,
+  };
 }

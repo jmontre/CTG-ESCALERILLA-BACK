@@ -207,12 +207,14 @@ export class SeasonsService {
    * abría la temporada nueva antes de dar las bajas, las posiciones iniciales
    * del histórico quedaban con los que ya no juegan y con huecos.
    */
-  async rollover(opts: {
-    retire_player_ids?: string[];
-    next_slug?: string;
-    next_name?: string;
-    category_scheme?: CategoryScheme;
-  } = {}) {
+  async rollover(
+    opts: {
+      retire_player_ids?: string[];
+      next_slug?: string;
+      next_name?: string;
+      category_scheme?: CategoryScheme;
+    } = {},
+  ) {
     const active = await this.prisma.season.findFirst({
       where: { status: 'active' },
       orderBy: { started_at: 'desc' },
@@ -334,13 +336,16 @@ export class SeasonsService {
       const inRange = ladder
         .filter(
           (p) =>
-            p.position! >= bounds.from &&
-            (bounds.to === null || p.position! <= bounds.to),
+            p.position >= bounds.from &&
+            (bounds.to === null || p.position <= bounds.to),
         )
         .map((p) => p.id);
       inRange.forEach((id) => placed.add(id));
       newOrder.push(
-        ...applyMasterOrderToRange(inRange, orderByCategory.get(category) ?? []),
+        ...applyMasterOrderToRange(
+          inRange,
+          orderByCategory.get(category) ?? [],
+        ),
       );
     }
     // Cola fuera de todas las categorías (pasa en `legacy4`, que corta en 48).

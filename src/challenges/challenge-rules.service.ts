@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { LadderService } from '../ladder/ladder.service';
 import { Player } from '@prisma/client';
 import { add } from 'date-fns';
 import {
@@ -23,9 +24,22 @@ const NO_RESPONSES_BEFORE_DEMOTION = 2;
  */
 const REMATCH_COOLDOWN_DAYS = 5;
 
+/**
+ * Partido de ingreso: el puesto más alto al que puede apuntar quien entra o
+ * vuelve a la escalerilla. Con 15, elige del #15 hacia abajo.
+ *
+ * Es configurable (`system_config.entry_match_top_limit`) porque el tope
+ * razonable depende de cuánta gente tenga la escalerilla ese semestre.
+ */
+export const ENTRY_MATCH_TOP_LIMIT_KEY = 'entry_match_top_limit';
+export const DEFAULT_ENTRY_MATCH_TOP_LIMIT = 15;
+
 @Injectable()
 export class ChallengeRulesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private ladder: LadderService,
+  ) {}
 
   /**
    * Último puesto ocupado de la escalerilla. Los niveles son las filas de la
@@ -62,8 +76,8 @@ export class ChallengeRulesService {
     )
       return;
 
-    const mine = this.getLevel(challenger.position!, ladderSize);
-    const theirs = this.getLevel(challenged.position!, ladderSize);
+    const mine = this.getLevel(challenger.position, ladderSize);
+    const theirs = this.getLevel(challenged.position, ladderSize);
 
     // Mismo nivel pero el desafiado está detrás.
     if (mine === theirs) {
@@ -226,6 +240,10 @@ export class ChallengeRulesService {
    * El ganador sube a la posición del perdedor, todos entre ellos bajan 1
    */
   async processWin(challengeId: string, winnerId: string, loserId: string) {
+    // El partido de ingreso mueve distinto: el ingresante no tiene puesto del
+    // que salir, se inserta en el del rival (o entra último si perdió).
+    if (await this.handleIfEntryMatch(challengeId, winnerId)) return;
+
     const winner = await this.prisma.player.findUnique({
       where: { id: winnerId },
     });
@@ -454,6 +472,190 @@ export class ChallengeRulesService {
     );
   }
 
+  // ───────────────────── Partido de ingreso ─────────────────────
+
+  /**
+   * El puesto más alto al que puede apuntar un partido de ingreso.
+   * Configurable desde el panel de admin.
+   */
+  async entryMatchTopLimit(): Promise<number> {
+    const config = await this.prisma.systemConfig.findUnique({
+      where: { key: ENTRY_MATCH_TOP_LIMIT_KEY },
+    });
+    const value = Number(config?.value);
+    return Number.isFinite(value) && value >= 1
+      ? Math.floor(value)
+      : DEFAULT_ENTRY_MATCH_TOP_LIMIT;
+  }
+
+  async setEntryMatchTopLimit(limit: number): Promise<number> {
+    if (!Number.isFinite(limit) || limit < 1)
+      throw new BadRequestException('El tope debe ser un puesto válido (≥ 1)');
+    const value = String(Math.floor(limit));
+    await this.prisma.systemConfig.upsert({
+      where: { key: ENTRY_MATCH_TOP_LIMIT_KEY },
+      update: { value, updated_at: new Date() },
+      create: { key: ENTRY_MATCH_TOP_LIMIT_KEY, value },
+    });
+    return Math.floor(limit);
+  }
+
+  /**
+   * Rivales a los que puede apuntar quien tiene su partido de ingreso
+   * pendiente: cualquiera de la escalerilla del tope hacia abajo, que no esté
+   * ocupado con otro desafío ni inmune.
+   */
+  async getEntryMatchTargets(entrantId: string) {
+    const entrant = await this.prisma.player.findUnique({
+      where: { id: entrantId },
+      select: { id: true, name: true, entry_match_available: true },
+    });
+    if (!entrant) throw new BadRequestException('Jugador no encontrado');
+
+    const limit = await this.entryMatchTopLimit();
+    if (!entrant.entry_match_available)
+      return { available: false, top_limit: limit, targets: [] };
+
+    const candidates = await this.prisma.player.findMany({
+      where: { position: { gte: limit, lt: 1000 } },
+      orderBy: { position: 'asc' },
+      select: {
+        id: true,
+        name: true,
+        position: true,
+        avatar_url: true,
+        immune_until: true,
+      },
+    });
+
+    const busy = await this.prisma.challenge.findMany({
+      where: { status: { in: ['pending', 'accepted'] } },
+      select: { challenger_id: true, challenged_id: true },
+    });
+    const occupied = new Set(
+      busy.flatMap((c) => [c.challenger_id, c.challenged_id]),
+    );
+
+    const now = new Date();
+    return {
+      available: true,
+      top_limit: limit,
+      targets: candidates
+        .filter(
+          (p) =>
+            !occupied.has(p.id) && !(p.immune_until && p.immune_until > now),
+        )
+        .map(({ immune_until, ...p }) => p),
+    };
+  }
+
+  /**
+   * Validación del partido de ingreso. No corren las reglas normales de
+   * escalerilla (fila, vulnerabilidad, rematch): el ingresante no tiene puesto
+   * todavía, justamente lo está jugando.
+   */
+  async validateEntryChallenge(entrantId: string, targetId: string) {
+    const [entrant, target] = await Promise.all([
+      this.prisma.player.findUnique({ where: { id: entrantId } }),
+      this.prisma.player.findUnique({ where: { id: targetId } }),
+    ]);
+    if (!entrant || !target)
+      throw new BadRequestException('Jugador no encontrado');
+    if (entrantId === targetId)
+      throw new BadRequestException('No puedes desafiarte a ti mismo');
+
+    if (!entrant.entry_match_available)
+      throw new BadRequestException(
+        'No tienes un partido de ingreso disponible. Se habilita al entrar al ' +
+          'club o al reincorporarte a la escalerilla.',
+      );
+    if (entrant.position != null)
+      throw new BadRequestException(
+        'Ya estás en la escalerilla: te toca desafiar con las reglas normales.',
+      );
+    if (target.position == null || target.position >= 1000)
+      throw new BadRequestException(
+        `${target.name} no está en la escalerilla.`,
+      );
+
+    const limit = await this.entryMatchTopLimit();
+    if (target.position < limit)
+      throw new BadRequestException(
+        `El partido de ingreso se juega del puesto #${limit} hacia abajo. ` +
+          `${target.name} está #${target.position}.`,
+      );
+
+    await this.validateNotOccupied(entrantId, entrant.name);
+    await this.validateNotOccupied(targetId, target.name);
+    this.validateImmunity(target);
+
+    return { entrant, target };
+  }
+
+  /** El desafío es un partido de ingreso, o `null` si es uno normal. */
+  private async entryChallenge(challengeId: string) {
+    const challenge = await this.prisma.challenge.findUnique({
+      where: { id: challengeId },
+      select: {
+        id: true,
+        type: true,
+        challenger_id: true,
+        challenged_id: true,
+      },
+    });
+    return challenge?.type === 'entry' ? challenge : null;
+  }
+
+  /**
+   * Movimiento del partido de ingreso: si el ingresante gana toma el puesto
+   * del rival (que baja uno, junto con todos los de abajo); si pierde, entra
+   * último de toda la escalerilla. En los dos casos gasta su única oportunidad.
+   *
+   * Es distinto del corrimiento normal porque el ingresante no tiene puesto
+   * del que salir: no se "sube" desde ningún lado, se inserta.
+   */
+  async processEntryOutcome(
+    entrantId: string,
+    targetId: string,
+    entrantWon: boolean,
+  ) {
+    const target = await this.prisma.player.findUnique({
+      where: { id: targetId },
+      select: { position: true },
+    });
+
+    if (entrantWon && target?.position != null) {
+      await this.ladder.insertAt(entrantId, target.position, 'entry_match_won');
+    } else {
+      await this.ladder.sendToBottom(entrantId, 'entry_match_lost');
+    }
+
+    // Una sola oportunidad: gane o pierda, el derecho se gasta.
+    await this.prisma.player.update({
+      where: { id: entrantId },
+      data: { entry_match_available: false },
+    });
+  }
+
+  /**
+   * Si el desafío es de ingreso, aplica su movimiento y avisa que ya está
+   * resuelto. Los flujos normales (resultado, rechazo, no-respuesta, cron)
+   * llaman a esto primero y así no duplican la regla en cinco lugares.
+   */
+  async handleIfEntryMatch(
+    challengeId: string,
+    winnerId: string,
+  ): Promise<boolean> {
+    const entry = await this.entryChallenge(challengeId);
+    if (!entry) return false;
+    await this.processEntryOutcome(
+      entry.challenger_id,
+      entry.challenged_id,
+      winnerId === entry.challenger_id,
+    );
+    return true;
+  }
+
   // ───────────────── Desaires: rechazo y no-respuesta ─────────────────
 
   /**
@@ -475,6 +677,9 @@ export class ChallengeRulesService {
     declinerId: string,
     reason: 'challenge_rejected' | 'challenge_not_answered',
   ): Promise<void> {
+    // Desairar un partido de ingreso lo pierde: el ingresante toma el puesto.
+    if (await this.handleIfEntryMatch(challengeId, challengerId)) return;
+
     const challenger = await this.prisma.player.findUnique({
       where: { id: challengerId },
     });
@@ -507,7 +712,7 @@ export class ChallengeRulesService {
           data: {
             player_id: p.id,
             old_position: p.position,
-            position: p.position! - 1,
+            position: p.position - 1,
             reason,
           },
         }),
@@ -528,7 +733,7 @@ export class ChallengeRulesService {
       ...shifting.map((p) =>
         this.prisma.player.update({
           where: { id: p.id },
-          data: { position: p.position! - 1 },
+          data: { position: p.position - 1 },
         }),
       ),
       this.prisma.player.update({
@@ -624,7 +829,7 @@ export class ChallengeRulesService {
           data: {
             player_id: p.id,
             old_position: p.position,
-            position: p.position! - 1,
+            position: p.position - 1,
             reason,
           },
         }),
@@ -639,7 +844,7 @@ export class ChallengeRulesService {
       ...shifting.map((p) =>
         this.prisma.player.update({
           where: { id: p.id },
-          data: { position: p.position! - 1 },
+          data: { position: p.position - 1 },
         }),
       ),
       this.prisma.player.update({

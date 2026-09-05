@@ -43,7 +43,7 @@ const TIER = {
  * escalerilla a medio Master sería peor que no tocarla.
  */
 export function isMasterFinished(input: MasterOrderInput): boolean {
-  const final = input.matches.find((m) => m.round === 'final');
+  const final = input.matches.find((m) => m.round === 'final')!;
   return final?.status === 'completed' && !!final.winner_id;
 }
 

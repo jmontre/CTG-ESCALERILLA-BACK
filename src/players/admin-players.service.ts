@@ -50,7 +50,11 @@ export class AdminPlayersService {
       throw new ConflictException(`${player.name} ya está en la escalerilla`);
 
     if (position != null) {
-      const result = await this.ladder.insertAt(id, position, 'rejoined_ladder');
+      const result = await this.ladder.insertAt(
+        id,
+        position,
+        'rejoined_ladder',
+      );
       await this.prisma.player.update({
         where: { id },
         data: { entry_match_available: false },
@@ -121,6 +125,10 @@ export class AdminPlayersService {
         email: data.email,
         phone: data.phone,
         position,
+        // El socio nuevo que entra sin puesto se gana el suyo en la cancha:
+        // elige rival del tope hacia abajo y si gana entra en ese puesto.
+        // Los admins quedan fuera (no juegan la escalerilla).
+        entry_match_available: position == null && !isAdmin,
         member_type: data.member_type || 'socio',
         parent_id: data.parent_id || null,
         has_debt: data.has_debt || false,
@@ -173,7 +181,12 @@ export class AdminPlayersService {
     if (data.name !== undefined) playerUpdate.name = data.name;
     if (data.email !== undefined) playerUpdate.email = data.email;
     if (data.phone !== undefined) playerUpdate.phone = data.phone;
-    if (data.position !== undefined) playerUpdate.position = data.position;
+    if (data.position !== undefined) {
+      playerUpdate.position = data.position;
+      // Si el admin lo ubica a mano, ya no le queda partido de ingreso: el
+      // puesto se lo dieron, no lo jugó.
+      if (data.position !== null) playerUpdate.entry_match_available = false;
+    }
     if (data.wins !== undefined) playerUpdate.wins = data.wins;
     if (data.losses !== undefined) playerUpdate.losses = data.losses;
     if (data.total_matches !== undefined)

@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { ChallengeRulesService } from './challenge-rules.service';
+import { LadderService } from '../ladder/ladder.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -44,7 +45,7 @@ describe('ChallengeRulesService — desaires', () => {
   const snapshot = () =>
     [...ladder.values()]
       .filter((p) => p.position != null && p.position < 1000)
-      .sort((a, b) => a.position! - b.position!)
+      .sort((a, b) => a.position - b.position)
       .map((p) => `#${p.position} ${p.name}`);
 
   const prismaMock = {
@@ -58,8 +59,8 @@ describe('ChallengeRulesService — desaires', () => {
         );
         active.sort((a, b) =>
           orderBy?.position === 'desc'
-            ? b.position! - a.position!
-            : a.position! - b.position!,
+            ? b.position - a.position
+            : a.position - b.position,
         );
         return Promise.resolve(active[0] ?? null);
       }),
@@ -67,17 +68,17 @@ describe('ChallengeRulesService — desaires', () => {
         let list = [...ladder.values()].filter((p) => p.position != null);
         const pos = where?.position ?? {};
         if (pos.gt !== undefined)
-          list = list.filter((p) => p.position! > pos.gt);
+          list = list.filter((p) => p.position > pos.gt);
         if (pos.gte !== undefined)
-          list = list.filter((p) => p.position! >= pos.gte);
+          list = list.filter((p) => p.position >= pos.gte);
         if (pos.lte !== undefined)
-          list = list.filter((p) => p.position! <= pos.lte);
+          list = list.filter((p) => p.position <= pos.lte);
         if (pos.lt !== undefined)
-          list = list.filter((p) => p.position! < pos.lt);
+          list = list.filter((p) => p.position < pos.lt);
         list.sort((a, b) =>
           orderBy?.position === 'desc'
-            ? b.position! - a.position!
-            : a.position! - b.position!,
+            ? b.position - a.position
+            : a.position - b.position,
         );
         return Promise.resolve(list);
       }),
@@ -86,7 +87,7 @@ describe('ChallengeRulesService — desaires', () => {
       // izquierda a derecha), y devuelve una promesa para que también sirva
       // cuando el servicio hace `await update(...)` suelto.
       update: jest.fn(({ where, data }: any) => {
-        const p = ladder.get(where.id)!;
+        const p = ladder.get(where.id);
         if (data.position !== undefined) p.position = data.position;
         if (data.no_response_count?.increment) {
           p.no_response_count += data.no_response_count.increment;
@@ -104,8 +105,19 @@ describe('ChallengeRulesService — desaires', () => {
     challenge: {
       count: jest.fn(() => Promise.resolve(0)),
       findFirst: jest.fn((_args: any): Promise<any> => Promise.resolve(null)),
+      // Desafío normal: el partido de ingreso tiene sus propios tests.
+      findUnique: jest.fn(
+        (_args: any): Promise<any> => Promise.resolve({ type: 'normal' }),
+      ),
     },
     $transaction: jest.fn((ops: Array<Promise<unknown>>) => Promise.all(ops)),
+  };
+
+  const ladderMock: any = {
+    insertAt: jest.fn(),
+    sendToBottom: jest.fn(),
+    retire: jest.fn(),
+    size: jest.fn(() => Promise.resolve(0)),
   };
 
   beforeEach(async () => {
@@ -114,6 +126,7 @@ describe('ChallengeRulesService — desaires', () => {
       providers: [
         ChallengeRulesService,
         { provide: PrismaService, useValue: prismaMock },
+        { provide: LadderService, useValue: ladderMock },
       ],
     }).compile();
     service = module.get(ChallengeRulesService);
@@ -198,7 +211,7 @@ describe('ChallengeRulesService — desaires', () => {
 
       const positions = [...ladder.values()]
         .map((p) => p.position)
-        .sort((a, b) => a! - b!);
+        .sort((a, b) => a - b);
       expect(positions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     });
   });
@@ -208,47 +221,47 @@ describe('ChallengeRulesService — desaires', () => {
       seed(Array.from({ length: 20 }, (_, i) => `J${i + 1}`));
       const result = await service.applyNoResponsePenalty('J5');
       expect(result).toBeNull();
-      expect(ladder.get('J5')!.position).toBe(5);
-      expect(ladder.get('J5')!.no_response_count).toBe(1);
+      expect(ladder.get('J5').position).toBe(5);
+      expect(ladder.get('J5').no_response_count).toBe(1);
     });
 
     it('la segunda lo manda al último de su categoría', async () => {
       seed(Array.from({ length: 20 }, (_, i) => `J${i + 1}`));
-      ladder.get('J5')!.no_response_count = 1;
+      ladder.get('J5').no_response_count = 1;
 
       const result = await service.applyNoResponsePenalty('J5');
 
       // J5 está en categoría A (1-14): cae al #14 y los del medio suben uno.
       expect(result).toBe(14);
-      expect(ladder.get('J5')!.position).toBe(14);
-      expect(ladder.get('J6')!.position).toBe(5);
-      expect(ladder.get('J14')!.position).toBe(13);
-      expect(ladder.get('J15')!.position).toBe(15); // categoría B, intacto
+      expect(ladder.get('J5').position).toBe(14);
+      expect(ladder.get('J6').position).toBe(5);
+      expect(ladder.get('J14').position).toBe(13);
+      expect(ladder.get('J15').position).toBe(15); // categoría B, intacto
     });
 
     it('la tercera lo baja al último de la categoría siguiente', async () => {
       seed(Array.from({ length: 40 }, (_, i) => `J${i + 1}`));
-      ladder.get('J5')!.no_response_count = 2;
+      ladder.get('J5').no_response_count = 2;
 
       const result = await service.applyNoResponsePenalty('J5');
 
       // Un escalón más abajo: fondo de categoría B (#28).
       expect(result).toBe(28);
-      expect(ladder.get('J5')!.position).toBe(28);
+      expect(ladder.get('J5').position).toBe(28);
     });
 
     it('no baja más allá del final real de la escalerilla', async () => {
       // Solo 20 jugadores: el fondo de C (#29+) no existe.
       seed(Array.from({ length: 20 }, (_, i) => `J${i + 1}`));
-      ladder.get('J2')!.no_response_count = 3; // ya arrastra castigos
+      ladder.get('J2').no_response_count = 3; // ya arrastra castigos
 
       const result = await service.applyNoResponsePenalty('J2');
 
       expect(result).toBe(20);
-      expect(ladder.get('J2')!.position).toBe(20);
+      expect(ladder.get('J2').position).toBe(20);
       const positions = [...ladder.values()]
         .map((p) => p.position)
-        .sort((a, b) => a! - b!);
+        .sort((a, b) => a - b);
       expect(positions).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
     });
 
@@ -256,24 +269,24 @@ describe('ChallengeRulesService — desaires', () => {
       // Solo 20 jugadores: la categoría B llega hasta el #28 en teoría, pero
       // el último puesto que existe es el #20.
       seed(Array.from({ length: 20 }, (_, i) => `J${i + 1}`));
-      ladder.get('J18')!.no_response_count = 1;
+      ladder.get('J18').no_response_count = 1;
 
       const result = await service.applyNoResponsePenalty('J18');
 
       expect(result).toBe(20);
-      expect(ladder.get('J18')!.position).toBe(20);
+      expect(ladder.get('J18').position).toBe(20);
     });
 
     it('no mueve a quien ya está en el fondo', async () => {
       seed(Array.from({ length: 20 }, (_, i) => `J${i + 1}`));
-      ladder.get('J20')!.no_response_count = 1;
+      ladder.get('J20').no_response_count = 1;
 
       const result = await service.applyNoResponsePenalty('J20');
 
       expect(result).toBeNull();
-      expect(ladder.get('J20')!.position).toBe(20);
+      expect(ladder.get('J20').position).toBe(20);
       // El contador igual avanza: si vuelve a subir, arrastra el historial.
-      expect(ladder.get('J20')!.no_response_count).toBe(2);
+      expect(ladder.get('J20').no_response_count).toBe(2);
     });
   });
 
@@ -281,8 +294,8 @@ describe('ChallengeRulesService — desaires', () => {
     it('ganar jugando da inmunidad', async () => {
       seed(['Alfa', 'Beltrán']);
       await service.applyPostMatchStatus('Beltrán', 'Alfa');
-      expect(ladder.get('Beltrán')!.immune_until).not.toBeNull();
-      expect(ladder.get('Alfa')!.vulnerable_until).not.toBeNull();
+      expect(ladder.get('Beltrán').immune_until).not.toBeNull();
+      expect(ladder.get('Alfa').vulnerable_until).not.toBeNull();
     });
 
     it('ganar por W.O. NO da inmunidad, pero el otro igual queda vulnerable', async () => {
@@ -291,14 +304,14 @@ describe('ChallengeRulesService — desaires', () => {
       await service.applyPostMatchStatus('Beltrán', 'Alfa', {
         grantImmunity: false,
       });
-      expect(ladder.get('Beltrán')!.immune_until).toBeNull();
-      expect(ladder.get('Alfa')!.vulnerable_until).not.toBeNull();
+      expect(ladder.get('Beltrán').immune_until).toBeNull();
+      expect(ladder.get('Alfa').vulnerable_until).not.toBeNull();
     });
 
     it('el #1 nunca recibe inmunidad', async () => {
       seed(['Alfa', 'Beltrán']);
       await service.applyPostMatchStatus('Alfa', 'Beltrán');
-      expect(ladder.get('Alfa')!.immune_until).toBeNull();
+      expect(ladder.get('Alfa').immune_until).toBeNull();
     });
   });
 
@@ -352,14 +365,14 @@ describe('ChallengeRulesService — desaires', () => {
 
     it('no cuenta si no jugó 3 partidos desde el último W.O.', async () => {
       seed(['Alfa']);
-      ladder.get('Alfa')!.last_wo_win_at = new Date('2026-08-01');
+      ladder.get('Alfa').last_wo_win_at = new Date('2026-08-01');
       prismaMock.challenge.count.mockResolvedValue(2);
       await expect(service.canClaimWalkover('Alfa')).resolves.toBe(false);
     });
 
     it('vuelve a contar al llegar a 3 partidos jugados', async () => {
       seed(['Alfa']);
-      ladder.get('Alfa')!.last_wo_win_at = new Date('2026-08-01');
+      ladder.get('Alfa').last_wo_win_at = new Date('2026-08-01');
       prismaMock.challenge.count.mockResolvedValue(3);
       await expect(service.canClaimWalkover('Alfa')).resolves.toBe(true);
     });

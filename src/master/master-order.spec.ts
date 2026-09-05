@@ -84,7 +84,7 @@ describe('masterFinalOrder', () => {
   it('desempata dentro del escalón por diferencia de sets', () => {
     const c = cuadro();
     // b2 y a2 quedan con las mismas victorias: manda la diferencia de sets.
-    const a2 = c.groups[0].players.find((p) => p.player_id === 'a2')!;
+    const a2 = c.groups[0].players.find((p) => p.player_id === 'a2');
     a2.sets_won = 4;
     a2.sets_lost = 4; // diferencia 0 vs +1 de b2
     expect(masterFinalOrder(c).slice(2, 4)).toEqual(['b2', 'a2']);
@@ -93,9 +93,7 @@ describe('masterFinalOrder', () => {
   it('no reordena nada si la final no se jugó', () => {
     const c = cuadro();
     c.matches = c.matches.map((m) =>
-      m.round === 'final'
-        ? { ...m, status: 'pending', winner_id: null }
-        : m,
+      m.round === 'final' ? { ...m, status: 'pending', winner_id: null } : m,
     );
     expect(isMasterFinished(c)).toBe(false);
     expect(masterFinalOrder(c)).toEqual([]);

@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -49,7 +53,9 @@ export class LadderService {
     });
     if (!player) throw new NotFoundException('Jugador no encontrado');
     if (player.position == null)
-      throw new BadRequestException(`${player.name} ya está fuera de la escalerilla`);
+      throw new BadRequestException(
+        `${player.name} ya está fuera de la escalerilla`,
+      );
 
     const from = player.position;
     const below = await this.prisma.player.findMany({
@@ -68,7 +74,7 @@ export class LadderService {
           data: {
             player_id: p.id,
             old_position: p.position,
-            position: p.position! - 1,
+            position: p.position - 1,
             reason,
           },
         }),
@@ -78,7 +84,7 @@ export class LadderService {
       ...below.map((p) =>
         this.prisma.player.update({
           where: { id: p.id },
-          data: { position: p.position! - 1 },
+          data: { position: p.position - 1 },
         }),
       ),
     ]);
@@ -118,7 +124,7 @@ export class LadderService {
           data: {
             player_id: p.id,
             old_position: p.position,
-            position: p.position! + 1,
+            position: p.position + 1,
             reason,
           },
         }),
@@ -127,7 +133,7 @@ export class LadderService {
       ...below.map((p) =>
         this.prisma.player.update({
           where: { id: p.id },
-          data: { position: p.position! + 1 },
+          data: { position: p.position + 1 },
         }),
       ),
       this.prisma.rankingHistory.create({

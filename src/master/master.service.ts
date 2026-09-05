@@ -851,7 +851,7 @@ export class MasterService {
       take: DIRECT_QUALIFIERS,
     });
     const winners = playoffs
-      .map((m) => m.winner!)
+      .map((m) => m.winner)
       .filter((w): w is NonNullable<typeof w> => !!w);
 
     // Los 8 ordenados por su puesto en la escalerilla, y repartidos por paridad.
