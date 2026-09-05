@@ -5,7 +5,18 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AchievementsService } from '../achievements/achievements.service';
-import { categoryOf, CategoryScheme } from '../common/ladder';
+import { LadderService } from '../ladder/ladder.service';
+import {
+  applyMasterOrderToRange,
+  masterFinalOrder,
+} from '../master/master-order';
+import {
+  categoriesOf,
+  categoryBounds,
+  categoryOf,
+  CategoryScheme,
+} from '../common/ladder';
+import { nextSeason as nextSeasonNaming } from '../common/season-naming';
 import { buildPeriods } from '../common/periods';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ACHIEVEMENTS_BY_CODE } from '../achievements/achievements.catalog';
@@ -27,6 +38,7 @@ export class SeasonsService {
     private prisma: PrismaService,
     private achievements: AchievementsService,
     private notifications: NotificationsService,
+    private ladder: LadderService,
   ) {}
 
   /** Jugadores que participan de la escalerilla (excluye admins y sin posición). */
@@ -101,20 +113,29 @@ export class SeasonsService {
   }
 
   /**
-   * Cierra la temporada: congela el standing de todos y otorga los logros del
-   * cuadro Master cuyo `name` coincide con `masterSeasonName`.
+   * Cierra la temporada: reordena cada categoría según cómo terminó su cuadro
+   * Master, congela el standing de todos y otorga los logros del podio.
+   *
+   * El orden es deliberado: primero se reordena y después se congela, para que
+   * la posición final que queda en el histórico sea la misma con la que arranca
+   * la temporada siguiente. Si se congelara antes, el resumen del jugador diría
+   * un puesto y la escalerilla mostraría otro.
    *
    * Los logros se otorgan en modo silencioso (ya marcados como vistos): la
    * celebración la hace el modal de resumen de temporada, no 50 notificaciones.
    */
-  async closeSeason(slug: string, masterSeasonName: string) {
+  async closeSeason(slug: string, masterSeasonName?: string) {
     const season = await this.prisma.season.findUnique({ where: { slug } });
     if (!season) throw new NotFoundException(`Temporada "${slug}" no existe`);
+    if (season.status === 'closed')
+      throw new BadRequestException(`La temporada "${slug}" ya está cerrada`);
 
     // Se congela con los rangos con los que SE JUGÓ esa temporada, no con los
     // vigentes: el 1er semestre 2026 tuvo 4 categorías y sus campeones de D
     // quedarían archivados en C si se usaran los rangos nuevos.
     const scheme = (season.category_scheme ?? 'v2') as CategoryScheme;
+
+    const reorder = await this.reorderByMaster(season.id, scheme);
 
     const players = await this.prisma.player.findMany({
       where: this.activeLadderWhere(),
@@ -171,9 +192,167 @@ export class SeasonsService {
     return {
       season: closed,
       standings: players.length,
+      reorder,
       ...podium,
       notified: notified.sent,
     };
+  }
+
+  /**
+   * Cambio de temporada en una sola operación: cierra la que está abierta
+   * (reordenando por el Master), da de baja a quienes no juegan el semestre
+   * siguiente y abre la temporada nueva con las posiciones ya compactadas.
+   *
+   * Existe porque hacerlo en tres pasos manuales era la parte frágil: si se
+   * abría la temporada nueva antes de dar las bajas, las posiciones iniciales
+   * del histórico quedaban con los que ya no juegan y con huecos.
+   */
+  async rollover(
+    opts: {
+      retire_player_ids?: string[];
+      next_slug?: string;
+      next_name?: string;
+      category_scheme?: CategoryScheme;
+    } = {},
+  ) {
+    const active = await this.prisma.season.findFirst({
+      where: { status: 'active' },
+      orderBy: { started_at: 'desc' },
+    });
+    if (!active)
+      throw new BadRequestException(
+        'No hay ninguna temporada abierta que cerrar.',
+      );
+
+    const naming = nextSeasonNaming(active.slug);
+    const nextSlug = opts.next_slug?.trim() || naming.slug;
+    const nextName = opts.next_name?.trim() || naming.name;
+    if (nextSlug === active.slug)
+      throw new BadRequestException(
+        `La temporada nueva no puede tener el mismo slug que la actual ("${active.slug}").`,
+      );
+
+    const closed = await this.closeSeason(active.slug);
+
+    // Las bajas van DESPUÉS del cierre (así el histórico del semestre que
+    // termina los incluye) y ANTES de abrir (así la temporada nueva parte con
+    // la escalerilla ya compactada).
+    const retired: Array<{ player: string; from: number }> = [];
+    for (const playerId of opts.retire_player_ids ?? []) {
+      const result = await this.ladder.retire(playerId, 'season_retirement');
+      retired.push({ player: result.player, from: result.from });
+    }
+
+    const opened = await this.openSeason(
+      nextSlug,
+      nextName,
+      opts.category_scheme ?? (active.category_scheme as CategoryScheme),
+    );
+
+    return {
+      closed: {
+        slug: active.slug,
+        name: active.name,
+        standings: closed.standings,
+        reorder: closed.reorder,
+        champions: closed.champions,
+      },
+      retired,
+      opened: {
+        slug: opened.season.slug,
+        name: opened.season.name,
+        players: opened.players,
+      },
+    };
+  }
+
+  /** Cómo se llamaría la temporada siguiente. Para prellenar el formulario. */
+  async nextSeasonPreview() {
+    const active = await this.prisma.season.findFirst({
+      where: { status: 'active' },
+      orderBy: { started_at: 'desc' },
+    });
+    if (!active) return null;
+    const naming = nextSeasonNaming(active.slug);
+    return {
+      current: { slug: active.slug, name: active.name },
+      next: { slug: naming.slug, name: naming.name },
+    };
+  }
+
+  /**
+   * Reordena cada categoría con el resultado de su cuadro Master: los 8 del
+   * round robin pasan a los 8 primeros puestos del rango, en el orden en que
+   * terminaron. Del 9 hacia abajo la categoría conserva su orden.
+   *
+   * Solo se reordena la categoría cuyo cuadro TERMINÓ. Un Master a medio jugar
+   * (o que nunca se generó) deja esa categoría intacta, y se informa en la
+   * respuesta para que el admin sepa por qué no se movió.
+   */
+  async reorderByMaster(seasonId: string, scheme: CategoryScheme) {
+    const masters = await this.prisma.masterSeason.findMany({
+      where: { season_id: seasonId },
+      include: {
+        groups: { include: { players: true } },
+        matches: {
+          where: { round: { in: ['semifinal', 'final'] } },
+          select: {
+            round: true,
+            status: true,
+            player1_id: true,
+            player2_id: true,
+            winner_id: true,
+          },
+        },
+      },
+    });
+
+    const ladder = await this.ladder.ordered();
+    if (ladder.length === 0) return { reordered: [], skipped: [], moved: 0 };
+
+    const reordered: string[] = [];
+    const skipped: string[] = [];
+    const orderByCategory = new Map<string, string[]>();
+
+    for (const master of masters) {
+      const order = masterFinalOrder(master);
+      if (order.length === 0) {
+        skipped.push(master.category);
+        continue;
+      }
+      orderByCategory.set(master.category, order);
+      reordered.push(master.category);
+    }
+    if (orderByCategory.size === 0) return { reordered, skipped, moved: 0 };
+
+    // Se recorre la escalerilla por tramos de categoría y se reordena cada uno
+    // por separado: así nadie cruza de categoría por el reordenamiento, solo
+    // cambia el orden interno.
+    const newOrder: string[] = [];
+    const placed = new Set<string>();
+    for (const category of categoriesOf(scheme)) {
+      const bounds = categoryBounds(category, scheme);
+      if (!bounds) continue;
+      const inRange = ladder
+        .filter(
+          (p) =>
+            p.position >= bounds.from &&
+            (bounds.to === null || p.position <= bounds.to),
+        )
+        .map((p) => p.id);
+      inRange.forEach((id) => placed.add(id));
+      newOrder.push(
+        ...applyMasterOrderToRange(
+          inRange,
+          orderByCategory.get(category) ?? [],
+        ),
+      );
+    }
+    // Cola fuera de todas las categorías (pasa en `legacy4`, que corta en 48).
+    newOrder.push(...ladder.filter((p) => !placed.has(p.id)).map((p) => p.id));
+
+    const applied = await this.ladder.applyOrder(newOrder, 'master_reorder');
+    return { reordered, skipped, moved: applied.moved };
   }
 
   /**
@@ -183,10 +362,16 @@ export class SeasonsService {
   private async applyMasterResults(
     seasonId: string,
     slug: string,
-    masterSeasonName: string,
+    masterSeasonName?: string,
   ) {
+    // Por temporada, no por nombre. Buscar por `name` exacto era frágil: una
+    // tilde o un "1er"/"1°" de diferencia y el cierre no encontraba ningún
+    // cuadro, cerrando la temporada sin campeones. El nombre queda solo como
+    // salida de emergencia para cuadros viejos sin temporada asignada.
     const masterSeasons = await this.prisma.masterSeason.findMany({
-      where: { name: masterSeasonName },
+      where: masterSeasonName
+        ? { OR: [{ season_id: seasonId }, { name: masterSeasonName }] }
+        : { season_id: seasonId },
       include: {
         matches: {
           where: { round: { in: ['semifinal', 'final'] } },

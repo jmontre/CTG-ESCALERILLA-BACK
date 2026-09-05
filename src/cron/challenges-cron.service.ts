@@ -221,7 +221,14 @@ export class ChallengesCronService {
         `⏱️  Desafío expirado (no jugado): ${challenge.challenger.name} vs ${challenge.challenged.name}`,
       );
 
-      await this.penalizeBothPlayers(challenge);
+      // Un partido de ingreso que vence sin jugarse lo gana el ingresante: la
+      // penalización normal (bajar un puesto) no aplica a quien todavía no
+      // tiene puesto.
+      const esIngreso = await this.rules.handleIfEntryMatch(
+        challenge.id,
+        challenge.challenger_id,
+      );
+      if (!esIngreso) await this.penalizeBothPlayers(challenge);
 
       // Notificar al grupo
       try {
@@ -231,7 +238,9 @@ export class ChallengesCronService {
             groupId,
             `🎾 *Escalerilla CTG — Partido no jugado*\n\n` +
               `⏰ ${challenge.challenger.name} vs ${challenge.challenged.name}\n` +
-              `El partido venció sin jugarse. Se aplicó penalización.`,
+              (esIngreso
+                ? `El partido de ingreso venció sin jugarse: ${challenge.challenger.name} entra en el puesto de ${challenge.challenged.name}.`
+                : `El partido venció sin jugarse. Se aplicó penalización.`),
           );
         }
       } catch (err) {

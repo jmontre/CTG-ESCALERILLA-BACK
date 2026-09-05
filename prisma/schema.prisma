@@ -57,6 +57,11 @@ model Player {
   // rivales que no contestan.
   last_wo_win_at DateTime?
 
+  // Tiene pendiente su partido de ingreso: elige un rival de la escalerilla y
+  // si gana toma su puesto, si pierde entra último. Se activa al crear un socio
+  // nuevo y al reincorporar a quien se había retirado; se apaga al jugarlo.
+  entry_match_available Boolean @default(false)
+
   user     User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
   parent   Player? @relation("family", fields: [parent_id], references: [id])
   children Player[] @relation("family")
@@ -80,6 +85,9 @@ model Challenge {
   id              String    @id @default(uuid())
   challenger_id   String
   challenged_id   String
+  /// "normal" = desafío de escalerilla · "entry" = partido de ingreso, el que
+  /// juega quien entra o vuelve a la escalerilla (ver challenge-rules).
+  type            String    @default("normal")
   status          String    @default("pending")
   accept_deadline DateTime
   play_deadline   DateTime
@@ -135,6 +143,10 @@ model PasswordResetToken {
 model MasterSeason {
   id                String    @id @default(uuid())
   name              String
+  /// Temporada de la escalerilla a la que pertenece el cuadro. Sin esto la
+  /// página del Master mostraba siempre el más reciente que existiera, aunque
+  /// fuera del semestre pasado.
+  season_id         String?
   category          String
   status            String    @default("pending")
   round_robin_start DateTime?
@@ -142,9 +154,11 @@ model MasterSeason {
   final_date        DateTime?
   created_at        DateTime  @default(now())
 
+  season  Season?       @relation(fields: [season_id], references: [id])
   groups  MasterGroup[]
   matches MasterMatch[]
 
+  @@index([season_id])
   @@map("master_seasons")
 }
 
@@ -315,7 +329,8 @@ model Season {
   /// Guardarlo evita reetiquetar el histórico al cambiar los rangos.
   category_scheme String @default("v2")
 
-  standings SeasonStanding[]
+  standings      SeasonStanding[]
+  master_seasons MasterSeason[]
 
   @@map("seasons")
 }

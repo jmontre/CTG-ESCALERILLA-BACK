@@ -118,6 +118,69 @@ export class ChallengesService {
     return { message: 'Desafío creado exitosamente', challenge };
   }
 
+  /**
+   * Crea el partido de ingreso: el socio nuevo (o el que se reincorpora) elige
+   * a quién enfrentar. Si gana, toma su puesto; si pierde, entra último.
+   *
+   * Los plazos son los del desafío normal (24h para responder, 5 días para
+   * jugar) porque de ahí en adelante lo procesa el mismo cron.
+   */
+  async createEntry(entrantId: string, targetId: string) {
+    const { entrant, target } = await this.rules.validateEntryChallenge(
+      entrantId,
+      targetId,
+    );
+    const now = new Date();
+    const challenge = await this.prisma.challenge.create({
+      data: {
+        challenger_id: entrantId,
+        challenged_id: targetId,
+        type: 'entry',
+        status: 'pending',
+        accept_deadline: add(now, { hours: 24 }),
+        play_deadline: add(now, { days: 5 }),
+      },
+      include: {
+        challenger: { select: CHALLENGE_PLAYER_SELECT },
+        challenged: { select: CHALLENGE_PLAYER_SELECT },
+      },
+    });
+
+    this.notifyAsync(async () => {
+      if (target.phone) {
+        await whatsappService.sendMessage(
+          target.phone,
+          `🎾 *Club de Tenis Graneros*\n\n*${entrant.name}* te eligió para su ` +
+            `PARTIDO DE INGRESO a la escalerilla.\n\n` +
+            `Si gana, entra en tu puesto (#${target.position}) y tú bajas uno. ` +
+            `Si pierde, entra último.\n\n` +
+            `Tienes 24 horas para responder.`,
+        );
+        await this.sleep(500);
+      }
+      await this.notificationsService.create(target.id, {
+        type: 'challenge_received',
+        title: '¡Partido de ingreso!',
+        body: `${entrant.name} te eligió para su partido de ingreso a la escalerilla. Tienes 24 horas para responder.`,
+        action_label: 'Responder',
+        action_path: '/fixture',
+      });
+    });
+
+    this.appLogger.challengeCreated(
+      entrant.name,
+      target.name,
+      0,
+      target.position ?? 0,
+    );
+    return { message: 'Partido de ingreso creado', challenge };
+  }
+
+  /** Rivales posibles para el partido de ingreso del jugador logueado. */
+  async entryMatchTargets(playerId: string) {
+    return this.rules.getEntryMatchTargets(playerId);
+  }
+
   async findAll() {
     return this.prisma.challenge.findMany({
       include: {
@@ -333,11 +396,15 @@ export class ChallengesService {
       challenge.challenged.name,
     );
 
+    const esIngreso = challenge.type === 'entry';
+
     this.notifyAsync(async () => {
       if (challenge.challenger.phone) {
         await whatsappService.sendMessage(
           challenge.challenger.phone,
-          `🎾 *Club de Tenis Graneros*\n\n${challenge.challenged.name} rechazó tu desafío.\n\n📈 Subes un puesto: ${challenge.challenged.name} baja a tu posición anterior.`,
+          esIngreso
+            ? `🎾 *Club de Tenis Graneros*\n\n${challenge.challenged.name} rechazó tu partido de ingreso.\n\n📈 Entras a la escalerilla en su puesto.`
+            : `🎾 *Club de Tenis Graneros*\n\n${challenge.challenged.name} rechazó tu desafío.\n\n📈 Subes un puesto: ${challenge.challenged.name} baja a tu posición anterior.`,
         );
         await this.sleep(500);
       }
@@ -362,7 +429,11 @@ export class ChallengesService {
       });
     });
 
-    return { message: 'Desafío rechazado. El desafiante gana por W.O.' };
+    return {
+      message: esIngreso
+        ? 'Partido de ingreso rechazado. El ingresante entra en tu puesto por W.O.'
+        : 'Desafío rechazado. El desafiante gana por W.O.',
+    };
   }
 
   async submitResult(

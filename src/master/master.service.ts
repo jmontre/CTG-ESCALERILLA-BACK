@@ -6,6 +6,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { categoryBounds } from '../common/ladder';
+import { seasonLabel } from '../common/periods';
 import { whatsappService } from '../notifications/whatsapp.service';
 import { toChileDateStr, chileWeekBoundsFromStr } from '../common/dates';
 
@@ -87,8 +88,73 @@ export class MasterService {
     }
   }
 
-  async findAll() {
+  /**
+   * Temporada de escalerilla abierta. El Master siempre se mira "parado" en
+   * una temporada: sin esto la página devolvía el cuadro más reciente que
+   * existiera, aunque fuera del semestre anterior.
+   */
+  private async activeSeason() {
+    return this.prisma.season.findFirst({
+      where: { status: 'active' },
+      orderBy: { started_at: 'desc' },
+    });
+  }
+
+  /**
+   * Temporada sobre la que se responde: la pedida por slug, o la abierta.
+   * Devuelve `null` si el slug no existe (el llamador responde vacío en vez de
+   * caerse: un filtro con un slug viejo no debería romper la página).
+   */
+  private async resolveSeason(slug?: string) {
+    if (!slug || slug === 'active') return this.activeSeason();
+    return this.prisma.season.findUnique({ where: { slug } });
+  }
+
+  /**
+   * Temporadas que se pueden elegir en el filtro del Master: todas las que
+   * tienen cuadro, más la abierta aunque todavía no lo tenga (ahí la página
+   * muestra el aviso de "aún no disponible" en vez del cuadro del semestre
+   * pasado).
+   */
+  async seasons() {
+    const seasons = await this.prisma.season.findMany({
+      orderBy: { started_at: 'desc' },
+      include: {
+        master_seasons: {
+          select: { category: true, status: true },
+          orderBy: { category: 'asc' },
+        },
+      },
+    });
+
+    return seasons
+      .filter((s) => s.master_seasons.length > 0 || s.status === 'active')
+      .map((s) => {
+        const year = s.started_at.getUTCFullYear();
+        return {
+          slug: s.slug,
+          name: s.name,
+          label: seasonLabel(s.name, year),
+          year,
+          is_active: s.status === 'active',
+          category_scheme: s.category_scheme,
+          categories: s.master_seasons.map((m) => m.category),
+          /** Falso = todavía no se generan los cuadros de esta temporada. */
+          has_master: s.master_seasons.length > 0,
+          // `every` sobre lista vacía da true: sin cuadros no hay nada
+          // completado.
+          completed:
+            s.master_seasons.length > 0 &&
+            s.master_seasons.every((m) => m.status === 'completed'),
+        };
+      });
+  }
+
+  async findAll(seasonSlug?: string) {
+    const season = await this.resolveSeason(seasonSlug);
+    if (!season) return [];
     return this.prisma.masterSeason.findMany({
+      where: { season_id: season.id },
       include: {
         groups: {
           include: {
@@ -119,9 +185,11 @@ export class MasterService {
     });
   }
 
-  async findByCategory(category: string) {
+  async findByCategory(category: string, seasonSlug?: string) {
+    const season = await this.resolveSeason(seasonSlug);
+    if (!season) return null;
     return this.prisma.masterSeason.findFirst({
-      where: { category },
+      where: { category, season_id: season.id },
       orderBy: { created_at: 'desc' },
       include: {
         groups: {
@@ -156,7 +224,7 @@ export class MasterService {
 
   async generateMaster(data: {
     category: string;
-    name: string;
+    name?: string;
     round_robin_start?: string;
     round_robin_end?: string;
     final_date?: string;
@@ -165,12 +233,25 @@ export class MasterService {
     if (!range)
       throw new BadRequestException('Categoría inválida. Usa A, B o C.');
 
+    // El cuadro pertenece a la temporada abierta. Sin temporada abierta no hay
+    // Master que generar: sería un cuadro huérfano, imposible de filtrar después.
+    const ladderSeason = await this.activeSeason();
+    if (!ladderSeason)
+      throw new BadRequestException(
+        'No hay una temporada de escalerilla abierta. Ábrela antes de generar el Master.',
+      );
+
+    // El nombre se deriva de la temporada: escribirlo a mano era la vía por la
+    // que el cierre no encontraba los cuadros (buscaba por nombre exacto).
+    const name = data.name?.trim() || ladderSeason.name;
+
     const existing = await this.prisma.masterSeason.findFirst({
-      where: { category: data.category, status: { not: 'completed' } },
+      where: { category: data.category, season_id: ladderSeason.id },
     });
     if (existing)
       throw new BadRequestException(
-        `Ya existe un torneo activo para la Categoría ${data.category}.`,
+        `La Categoría ${data.category} ya tiene su cuadro en ${ladderSeason.name}. ` +
+          `Elimínalo antes de volver a generarlo.`,
       );
 
     const players = await this.prisma.player.findMany({
@@ -195,7 +276,8 @@ export class MasterService {
 
     const season = await this.prisma.masterSeason.create({
       data: {
-        name: data.name,
+        name,
+        season_id: ladderSeason.id,
         category: data.category,
         status: 'playoffs',
         round_robin_start: data.round_robin_start
@@ -773,7 +855,7 @@ export class MasterService {
       take: DIRECT_QUALIFIERS,
     });
     const winners = playoffs
-      .map((m) => m.winner!)
+      .map((m) => m.winner)
       .filter((w): w is NonNullable<typeof w> => !!w);
 
     // Los 8 ordenados por su puesto en la escalerilla, y repartidos por paridad.

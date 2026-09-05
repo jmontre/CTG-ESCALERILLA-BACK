@@ -79,11 +79,28 @@ describe('MasterService.scheduleMatch', () => {
 });
 
 describe('MasterService.findByCategory', () => {
-  it('incluye los partidos de semifinal y final de la temporada, no solo los de grupo', async () => {
+  const ladderSeason = {
+    id: 'temp-2',
+    slug: '2026-2',
+    name: 'Escalerilla 2026 · 2do Semestre',
+    status: 'active',
+  };
+
+  function build() {
     const prisma: any = {
       masterSeason: { findFirst: jest.fn().mockResolvedValue({ id: 's1' }) },
+      season: {
+        findFirst: jest.fn().mockResolvedValue(ladderSeason),
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ ...ladderSeason, id: 'temp-1', slug: '2026-1' }),
+      },
     };
-    const service = new MasterService(prisma);
+    return { service: new MasterService(prisma), prisma };
+  }
+
+  it('incluye los partidos de semifinal y final de la temporada, no solo los de grupo', async () => {
+    const { service, prisma } = build();
 
     await service.findByCategory('B');
 
@@ -93,12 +110,47 @@ describe('MasterService.findByCategory', () => {
       expect.arrayContaining(['semifinal', 'final']),
     );
   });
+
+  it('sin filtro, busca el cuadro de la temporada ABIERTA', async () => {
+    const { service, prisma } = build();
+
+    await service.findByCategory('B');
+
+    expect(prisma.season.findFirst).toHaveBeenCalled();
+    expect(prisma.masterSeason.findFirst.mock.calls[0][0].where).toEqual({
+      category: 'B',
+      season_id: 'temp-2',
+    });
+  });
+
+  it('con filtro, busca el cuadro de esa temporada', async () => {
+    const { service, prisma } = build();
+
+    await service.findByCategory('B', '2026-1');
+
+    expect(prisma.season.findUnique).toHaveBeenCalledWith({
+      where: { slug: '2026-1' },
+    });
+    expect(prisma.masterSeason.findFirst.mock.calls[0][0].where).toEqual({
+      category: 'B',
+      season_id: 'temp-1',
+    });
+  });
+
+  it('con un slug que no existe devuelve null en vez de caerse', async () => {
+    const { service, prisma } = build();
+    prisma.season.findUnique.mockResolvedValue(null);
+
+    await expect(service.findByCategory('B', 'no-existe')).resolves.toBeNull();
+    expect(prisma.masterSeason.findFirst).not.toHaveBeenCalled();
+  });
 });
 
 describe('MasterService.findAll', () => {
   it('incluye los partidos de semifinal y final de cada temporada', async () => {
     const prisma: any = {
       masterSeason: { findMany: jest.fn().mockResolvedValue([]) },
+      season: { findFirst: jest.fn().mockResolvedValue({ id: 'temp-2' }) },
     };
     const service = new MasterService(prisma);
 

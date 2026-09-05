@@ -45,6 +45,24 @@ export class AdminPlayersController {
     return this.adminService.movePlayer(id, data.newPosition);
   }
 
+  /** Baja de la escalerilla conservando todos los datos del jugador. */
+  @Post(':id/retire')
+  async retireFromLadder(@Param('id') id: string) {
+    return this.adminService.retireFromLadder(id);
+  }
+
+  /**
+   * Reincorpora al retirado. Sin `position`, le habilita el partido de ingreso;
+   * con `position`, lo ubica directo en ese puesto.
+   */
+  @Post(':id/rejoin')
+  async rejoinLadder(
+    @Param('id') id: string,
+    @Body() body: { position?: number },
+  ) {
+    return this.adminService.rejoinLadder(id, body?.position);
+  }
+
   @Post(':id/reset-immunity')
   async resetImmunity(@Param('id') id: string) {
     return this.adminService.resetImmunity(id);

@@ -45,6 +45,36 @@ export class ChallengesController {
    * Historial del usuario autenticado con las stats del período elegido.
    * Va ANTES de :id, o "history" se interpretaría como un id de desafío.
    */
+  /**
+   * GET /challenges/entry/targets
+   * Rivales elegibles para el partido de ingreso del jugador logueado.
+   * Va ANTES de :id, o "entry" se leería como id de desafío.
+   */
+  @Get('entry/targets')
+  async entryTargets(@Request() req: any) {
+    const playerId = await this.challengesService.getPlayerIdFromUserId(
+      req.user.sub,
+    );
+    return this.challengesService.entryMatchTargets(playerId);
+  }
+
+  /**
+   * POST /challenges/entry
+   * Partido de ingreso: quien entra o vuelve a la escalerilla elige rival.
+   */
+  @Post('entry')
+  async createEntry(
+    @Body() body: { challenged_id: string },
+    @Request() req: any,
+  ) {
+    if (!body?.challenged_id)
+      throw new BadRequestException('Falta el jugador a desafiar');
+    const entrantId = await this.challengesService.getPlayerIdFromUserId(
+      req.user.sub,
+    );
+    return this.challengesService.createEntry(entrantId, body.challenged_id);
+  }
+
   @Get('history')
   async history(@Request() req: any, @Query('period') period?: string) {
     const playerId = await this.challengesService.getPlayerIdFromUserId(
