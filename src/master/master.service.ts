@@ -141,7 +141,11 @@ export class MasterService {
           categories: s.master_seasons.map((m) => m.category),
           /** Falso = todavía no se generan los cuadros de esta temporada. */
           has_master: s.master_seasons.length > 0,
-          completed: s.master_seasons.every((m) => m.status === 'completed'),
+          // `every` sobre lista vacía da true: sin cuadros no hay nada
+          // completado.
+          completed:
+            s.master_seasons.length > 0 &&
+            s.master_seasons.every((m) => m.status === 'completed'),
         };
       });
   }

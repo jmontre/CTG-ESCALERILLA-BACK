@@ -514,7 +514,26 @@ export class ChallengeRulesService {
 
     const limit = await this.entryMatchTopLimit();
     if (!entrant.entry_match_available)
-      return { available: false, top_limit: limit, targets: [] };
+      return { available: false, pending: null, top_limit: limit, targets: [] };
+
+    // Si ya lo pidió, la pantalla muestra el partido en curso en vez de la
+    // lista: no puede elegir dos rivales.
+    const pending = await this.prisma.challenge.findFirst({
+      where: {
+        challenger_id: entrantId,
+        type: 'entry',
+        status: { in: ['pending', 'accepted'] },
+      },
+      select: {
+        id: true,
+        status: true,
+        accept_deadline: true,
+        play_deadline: true,
+        challenged: { select: { id: true, name: true, position: true } },
+      },
+    });
+    if (pending)
+      return { available: true, pending, top_limit: limit, targets: [] };
 
     const candidates = await this.prisma.player.findMany({
       where: { position: { gte: limit, lt: 1000 } },
@@ -539,6 +558,7 @@ export class ChallengeRulesService {
     const now = new Date();
     return {
       available: true,
+      pending: null,
       top_limit: limit,
       targets: candidates
         .filter(
