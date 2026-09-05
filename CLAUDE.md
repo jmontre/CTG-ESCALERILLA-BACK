@@ -56,7 +56,11 @@ AppModule
 ├── PlayersModule (PlayersController + AdminPlayersController)
 ├── ChallengesModule (ChallengesController + AdminChallengesController)
 ├── CronModule (ChallengesCronService con 3 cron jobs)
+├── LadderModule (global, expone LadderService: escrituras de posición)
 ├── MasterModule
+├── SeasonsModule (ciclo de vida de la temporada + histórico)
+├── AchievementsModule
+├── NotificationsModule
 └── ReservationsModule
 ```
 
@@ -68,10 +72,11 @@ AppModule
 |---------|-----------|-------|
 | `/auth` | register, login, me, forgot-password, reset-password | reset por WhatsApp |
 | `/players` | lista pública (excluye admins), perfil propio (`PUT /me`), avatar | |
-| `/admin/players` | CRUD jugadores, move, reset-immunity/vulnerability, weekly-usage | |
-| `/challenges` | create, accept, reject, result, schedule | |
-| `/admin/challenges` | resolve, cancel, force delete, extend deadline | |
-| `/master` | generate, schedule, player-result, result (admin), check-final | |
+| `/admin/players` | CRUD jugadores, move, **retire/rejoin**, reset-immunity/vulnerability, weekly-usage | |
+| `/challenges` | create, accept, reject, result, schedule, history, **entry** + **entry/targets** | |
+| `/admin/challenges` | resolve, cancel, force delete, extend deadline, **entry-limit** (GET/POST) | |
+| `/master` | `GET /?season=`, `GET /seasons`, `GET /:cat?season=`, generate, schedule, player-result, result (admin), check-final | todo lo público va por temporada |
+| `/seasons` | periods, me/summary, `:slug`/standings, **next**, open, `:slug`/close, **rollover** (admin) | |
 | `/reservations` | availability, courts, season, blocks, stats, light-config/summary, my, CRUD | |
 | `/cron` | `POST /cron/run` (trigger manual) | |
 | `/test` | pruebas WhatsApp | sin auth |
@@ -255,13 +260,46 @@ La temporada activa se lee de `SystemConfig` key `"season"` (`"verano"` | `"invi
 
 ## Reglas de Negocio: Torneo Master
 
-Categorías A/B/C/D = rangos de posición [1-12, 13-24, 25-36, 37-48]. Toma los 8 primeros del rango (falla si hay menos). Distribución por paridad de posición:
-- Grupo A: posiciones impares del rango (1°, 3°, 5°, 7°)
-- Grupo B: posiciones pares del rango (2°, 4°, 6°, 8°)
+Los rangos de categoría salen de `common/ladder.ts` según el `category_scheme` de la temporada (`v2`: A 1-14, B 15-28, C 29+; `legacy4`: los 4 rangos de 12 hasta el 1er semestre 2026). Del rango se toman 14 cupos: los 4 primeros clasifican directo al round robin, del 5° al 12° juegan un playoff a partido único por los 4 restantes, y del 13° en adelante quedan fuera. Los 8 resultantes se reparten en Grupo A / Grupo B.
+
+**Cada cuadro pertenece a una temporada** (`master_seasons.season_id`). `generateMaster` lo engancha con la temporada abierta y deriva el nombre de ella: antes el nombre se escribía a mano y el cierre no encontraba los cuadros. Los endpoints públicos responden siempre por temporada — sin `?season=` responden la abierta, que puede no tener cuadro todavía (y ahí la página avisa "aún no disponible" en vez de mostrar el del semestre pasado, que era el bug de septiembre 2026).
 
 Flujo automático: round robin → semifinales (al completar todos los partidos de grupo; cruces 1A-2B / 1B-2A) → final (al completar ambas semis). Estados de season: `pending → active → semifinals → final → completed`.
 
 **Doble confirmación de resultados**: `submitPlayerResult` (jugador) guarda en `master_matches.player1_result`/`player2_result` (Json). Si ambos coinciden → procesa; si difieren → `disputed`; el admin resuelve con `POST /master/matches/:id/result`. (Estos campos y la migración correspondiente existen desde el saneamiento de junio 2026 — antes el flujo de jugador estaba roto.)
+
+---
+
+## Temporadas: cierre, reordenamiento y bajas
+
+Una temporada es un semestre (`seasons`, slug `AÑO-SEMESTRE`). El histórico congelado vive en `season_standings`, así que la escalerilla se puede reordenar entera sin perder lo que pasó antes.
+
+**`POST /seasons/rollover`** hace el cambio completo en un paso (`SeasonsService.rollover`), en este orden — el orden importa:
+
+1. **Cierra** la temporada abierta. Primero reordena (`reorderByMaster`), después congela: si se congelara antes, el resumen del jugador diría un puesto y la escalerilla mostraría otro.
+2. **Baja** a los jugadores marcados (después del cierre, para que el histórico del semestre los incluya).
+3. **Abre** la siguiente, con slug y nombre derivados (`common/season-naming.ts`: `2026-1 → 2026-2 → 2027-1`), y congela la posición inicial de todos.
+
+**Reordenamiento por Master** (`reorderByMaster` + `master/master-order.ts`): los 8 del round robin pasan a los 8 primeros puestos de su categoría, en el orden campeón → finalista → semifinalistas perdedores → fase de grupos, desempatando dentro de cada escalón por récord de grupo (victorias, diferencia de sets, sets ganados). Del 9 hacia abajo la categoría no se toca. Reglas duras:
+- Se reordena **dentro del tramo de cada categoría**: nadie cruza de categoría por el reordenamiento.
+- Un cuadro sin final jugada **no reordena nada** (`isMasterFinished`); la respuesta informa qué categorías se saltaron.
+- Se usa el `category_scheme` de la temporada que cierra, no el vigente.
+
+**Bajas y reincorporaciones** (`POST /admin/players/:id/retire|rejoin`): salir de la escalerilla es `position = null` **más el corrimiento de los de abajo**. Todos los datos del jugador se conservan (récord, historial, logros, temporadas). Al reincorporar, sin `position` se le habilita el partido de ingreso; con `position` el admin lo ubica directo.
+
+⚠️ **Toda escritura de posición que no venga de un resultado va por `LadderService`** (`src/ladder/`): `retire`, `insertAt`, `sendToBottom`, `applyOrder`. Ponerlas a mano fue lo que dejó la numeración con huecos (1,2,4,5) y con eso los niveles de la pirámide corridos. Los movimientos por resultado de partido siguen en `ChallengeRulesService`.
+
+---
+
+## Partido de Ingreso
+
+Quien entra al club sin puesto o vuelve a la escalerilla juega **un** partido para ganarse su lugar: elige rival del tope hacia abajo, si gana entra en el puesto del rival (que baja uno, junto con todos los de abajo) y si pierde entra último de toda la escalerilla. Gane o pierda, el derecho se gasta.
+
+- `challenges.type = 'entry'` lo distingue del desafío normal; `players.entry_match_available` marca a quién le corresponde. Se enciende al crear un socio sin puesto (`AdminPlayersService.createPlayer`) y al reincorporar; se apaga al resolverse el partido o si el admin le asigna un puesto a mano.
+- **Tope configurable**: `system_config.entry_match_top_limit` (default 15). No puede apuntar más arriba de ese puesto.
+- No corren las reglas normales de escalerilla (fila de la pirámide, vulnerabilidad, espera entre revanchas): el ingresante todavía no tiene puesto. Sí corren "ocupado" e inmunidad del rival.
+- **Rechazo y vencimiento de plazo los gana el ingresante por W.O.**, igual que un desafío normal (incluido `expired_not_played`, donde la penalización habitual al challenger no aplica: no tiene puesto que bajar).
+- La regla vive en un solo lugar: `ChallengeRulesService.handleIfEntryMatch` intercepta al principio de `processWin` y `processDecline`, y el cron la llama antes de `penalizeBothPlayers`. Tests en `challenges/entry-match.spec.ts` y `ladder/ladder.service.spec.ts`.
 
 ---
 
@@ -270,6 +308,7 @@ Flujo automático: round robin → semifinales (al completar todos los partidos 
 El drift histórico fue saneado en junio 2026. **Todas las migraciones están versionadas** (`prisma/migrations/`, ya no en `.gitignore`) y reconstruyen la DB correctamente con `migrate deploy`:
 - `20260611100000_sync_schema_drift`: migración **idempotente** que registra todo lo creado históricamente con `db push` (tablas `courts`, `reservations`, `system_config`, `court_blocks`, las 4 del Master; columnas `extra_high_demand_slots`, `school_names`, `partner_name`, `is_challenge`, etc.). En una DB existente es no-op (guardas `IF NOT EXISTS` / `DO ... EXCEPTION WHEN duplicate_object`).
 - `20260611100002_add_performance_indexes`: índices de consulta + el único índice schema-vs-DB que **no** está en `schema.prisma`.
+- `20260905120000_master_por_temporada_y_partido_ingreso`: `master_seasons.season_id` (con backfill de los cuadros históricos a `2026-1`), `challenges.type` y `players.entry_match_available`. Idempotente.
 
 **Única excepción schema ↔ DB**: el índice único PARCIAL `reservations_active_slot_uniq` (`court_id, date, time_slot` WHERE `status = 'active'`) — Prisma no soporta índices parciales, así que vive solo en SQL. `migrate dev` lo reportará como drift esperado; **no eliminarlo**. Es la protección anti doble-booking: el código captura su violación (Prisma `P2002`) y la traduce a `BadRequestException`. Pre-deploy: si pudieran existir duplicados activos, verificar antes (comentario en la migración).
 
@@ -350,5 +389,6 @@ Trigger manual: `POST /cron/run` (ejecuta los dos primeros).
 - **`admin-players.service.ts` (`movePlayer`)** usa su propia lógica de movimiento de posiciones con `updateMany` increment/decrement (no delega a `ChallengeRulesService`) — verificar consistencia al modificar. (`admin-challenges.service.ts resolveChallenge` SÍ delega desde junio 2026.)
 - **`cancelChallenge` admin** revierte wins/losses pero **NO revierte** cambios de ranking (documentado en su respuesta; decisión de negocio).
 - **Cancelaciones tardías**: se discriminan por el string literal `'Cancelación tardía - turno descontado'` en queries de cupo (reservations.service y admin-players). No cambiarlo sin actualizar ambos.
+- **`AdminPlayersService.deletePlayer` falla (500) para cualquier jugador con historial**: borra el `User` esperando que cascadee, pero `RankingHistory`, `Challenge`, `MasterMatch` y `Reservation` no tienen `onDelete: Cascade` y la FK lo bloquea. Bug preexistente. Para sacar a alguien de la escalerilla, usar `retire` — que además es lo correcto: conserva sus datos.
 - **Posición al registrar**: `AuthService.register` (público) asigna `lastPlayer.position + 1` automáticamente. `AdminPlayersService.createPlayer` deja `position = null` si no se especifica.
 - **Pendiente fase 2** (documentado en el spec de junio 2026): granularidad de permisos por `admin_role`; cerrar/moderar el registro público; derivar `player_id` del token en vez del body; migrar de whatsapp-web.js a WhatsApp Business API; soporte multi-instancia (hoy **requiere 1 réplica** en Railway por crons y sesión WhatsApp); paginación de listados y N+1.
