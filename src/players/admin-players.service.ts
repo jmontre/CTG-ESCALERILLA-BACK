@@ -245,9 +245,10 @@ export class AdminPlayersService {
    * Da de baja la cuenta de un socio.
    *
    * Si nunca jugó ni reservó nada (cuenta creada por error), se borra de
-   * verdad. Si tiene historial, se **anonimiza**: el socio desaparece de la
-   * app y de la escalerilla, pero sus partidos siguen existiendo como "Socio
-   * retirado".
+   * verdad. Si tiene historial, se **desactiva**: desaparece de los listados y
+   * no puede volver a entrar, pero su fila sigue viva **y con su nombre**, así
+   * los partidos que jugó se siguen leyendo en el fixture y en el historial de
+   * sus rivales.
    *
    * Borrarlo de verdad no era opción: `challenges` y `master_matches`
    * referencian a los DOS jugadores, así que llevárselos borraría también el
@@ -260,7 +261,7 @@ export class AdminPlayersService {
       include: { user: true },
     });
     if (!player) throw new NotFoundException('Jugador no encontrado');
-    if (player.anonymized_at)
+    if (player.deactivated_at)
       throw new ConflictException(`${player.name} ya está dado de baja`);
 
     const huella = await this.footprint(id);
@@ -286,14 +287,15 @@ export class AdminPlayersService {
       };
     }
 
-    const anonymized = await this.anonymize(player);
-    this.appLogger.playerAnonymized(player.name, huella);
+    await this.deactivate(player);
+    this.appLogger.playerDeactivated(player.name, huella);
     return {
       message:
-        `${player.name} fue dado de baja. Sus ${huella.challenges} desafío(s) y ` +
-        `${huella.masterMatches} partido(s) de Master siguen en el historial del club ` +
-        `a nombre de "${anonymized.name}", para no borrárselos también a sus rivales.`,
-      mode: 'anonymized' as const,
+        `${player.name} fue dado de baja: ya no aparece en la app ni puede entrar. ` +
+        `Sus ${huella.challenges} desafío(s) y ${huella.masterMatches} partido(s) de ` +
+        `Master siguen en el historial del club a su nombre, para no borrárselos ` +
+        `también a sus rivales.`,
+      mode: 'deactivated' as const,
       footprint: huella,
     };
   }
@@ -317,21 +319,23 @@ export class AdminPlayersService {
   }
 
   /**
-   * Deja la cuenta sin datos personales y sin poder iniciar sesión, pero con
-   * la fila viva para que las FK de partidos y reservas sigan resolviendo.
+   * Cierra la cuenta: sin datos de contacto y sin poder iniciar sesión, pero
+   * con la fila viva para que las FK de partidos y reservas sigan resolviendo.
    *
-   * `email` y `username` son únicos, así que no pueden quedar todos en el
-   * mismo literal: se les cuelga un sufijo del id.
+   * **El `name` NO se toca.** Es lo único que se conserva a propósito: sin él,
+   * el fixture del club y el historial del rival mostrarían "Socio retirado
+   * 6-1 6-2" sin decir contra quién se jugó.
+   *
+   * `email` y `username` son únicos y se liberan con un sufijo del id, así la
+   * persona puede volver a registrarse más adelante con los mismos datos.
    */
-  private async anonymize(player: { id: string; user_id: string }) {
+  private async deactivate(player: { id: string; user_id: string }) {
     const sufijo = player.id.slice(0, 8);
-    const nombre = 'Socio retirado';
 
     const [updated] = await this.prisma.$transaction([
       this.prisma.player.update({
         where: { id: player.id },
         data: {
-          name: nombre,
           email: `retirado-${sufijo}@ctg.invalid`,
           phone: null,
           avatar_url: null,
@@ -342,7 +346,7 @@ export class AdminPlayersService {
           has_debt: false,
           school_names: [],
           parent_id: null,
-          anonymized_at: new Date(),
+          deactivated_at: new Date(),
         },
       }),
       // Las notificaciones son suyas y no le sirven a nadie más.
@@ -431,8 +435,8 @@ export class AdminPlayersService {
   async getAllPlayers() {
     return this.prisma.player.findMany({
       // Los dados de baja desaparecen del panel; sus partidos siguen en el
-      // historial del club a nombre de "Socio retirado".
-      where: { anonymized_at: null },
+      // historial del club, con su nombre.
+      where: { deactivated_at: null },
       include: {
         user: { select: { username: true, is_admin: true, admin_role: true } },
         parent: { select: { id: true, name: true } },

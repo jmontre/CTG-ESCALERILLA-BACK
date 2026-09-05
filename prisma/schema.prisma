@@ -62,10 +62,11 @@ model Player {
   // nuevo y al reincorporar a quien se había retirado; se apaga al jugarlo.
   entry_match_available Boolean @default(false)
 
-  // Cuenta anonimizada: el socio desaparece de la app pero sus partidos siguen
-  // existiendo con el nombre "Socio retirado". Borrarlo de verdad se llevaría
-  // los desafíos del historial del RIVAL y descuadraría el fixture del club.
-  anonymized_at DateTime?
+  // Cuenta dada de baja: el socio desaparece de la app (no aparece en listados
+  // ni puede entrar) pero su fila sigue viva y CON SU NOMBRE, para que los
+  // partidos que jugó se sigan leyendo en el fixture y en el historial de sus
+  // rivales. Borrarlo de verdad se llevaría esos desafíos también para ellos.
+  deactivated_at DateTime?
 
   user     User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
   parent   Player? @relation("family", fields: [parent_id], references: [id])

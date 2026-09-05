@@ -79,9 +79,9 @@ export class PlayersService {
     // Endpoint público (@Public): se exponen solo campos no sensibles.
     // NO incluir email, phone ni has_debt (datos personales de socios).
     const players = await this.prisma.player.findMany({
-      // Los dados de baja siguen en la base para que sus partidos no se caigan
-      // del historial de los rivales, pero no se listan en ningún lado.
-      where: { anonymized_at: null },
+      // Los dados de baja siguen en la base, con su nombre, para que sus
+      // partidos no se caigan del historial de los rivales. Pero no se listan.
+      where: { deactivated_at: null },
       orderBy: { position: 'asc' },
       select: {
         id: true,

@@ -6,7 +6,8 @@ import { AdminPlayersService } from './admin-players.service';
  *
  * El borrado real devolvía 500 para cualquier jugador con historial (la FK de
  * `challenges` lo bloqueaba). Ahora: sin rastro se borra, con rastro se
- * anonimiza y sus partidos siguen en el historial de los rivales.
+ * desactiva la cuenta y sus partidos siguen en el historial de los rivales,
+ * con el nombre real del jugador.
  */
 describe('AdminPlayersService — baja de socios', () => {
   const jugador = {
@@ -14,7 +15,7 @@ describe('AdminPlayersService — baja de socios', () => {
     user_id: 'u1',
     name: 'Pedro Pérez',
     position: 10,
-    anonymized_at: null,
+    deactivated_at: null,
   };
 
   function build(huella: Partial<Record<string, number>> = {}, player = jugador) {
@@ -22,7 +23,7 @@ describe('AdminPlayersService — baja de socios', () => {
     const prisma: any = {
       player: {
         findUnique: jest.fn(() => Promise.resolve(player)),
-        update: jest.fn(() => Promise.resolve({ ...player, name: 'Socio retirado' })),
+        update: jest.fn(() => Promise.resolve(player)),
       },
       user: { delete: jest.fn(), update: jest.fn() },
       notification: { deleteMany: jest.fn() },
@@ -31,13 +32,11 @@ describe('AdminPlayersService — baja de socios', () => {
       masterMatch: { count: cuenta(huella.masterMatches ?? 0) },
       reservation: { count: cuenta(huella.reservations ?? 0) },
       seasonStanding: { count: cuenta(huella.standings ?? 0) },
-      $transaction: jest.fn((ops: any[]) =>
-        Promise.resolve(ops.map(() => ({ ...player, name: 'Socio retirado' }))),
-      ),
+      $transaction: jest.fn((ops: any[]) => Promise.resolve(ops.map(() => player))),
     };
     const appLogger: any = {
       playerDeleted: jest.fn(),
-      playerAnonymized: jest.fn(),
+      playerDeactivated: jest.fn(),
       playerMoved: jest.fn(),
       ladderReordered: jest.fn(),
     };
@@ -65,18 +64,27 @@ describe('AdminPlayersService — baja de socios', () => {
     expect(appLogger.playerDeleted).toHaveBeenCalled();
   });
 
-  it('anonimiza —no borra— a quien tiene desafíos jugados', async () => {
+  it('desactiva —no borra— a quien tiene desafíos jugados', async () => {
     const { service, prisma } = build({ challenges: 7 });
 
     const res = await service.deletePlayer(jugador.id);
 
-    expect(res.mode).toBe('anonymized');
+    expect(res.mode).toBe('deactivated');
     expect(prisma.user.delete).not.toHaveBeenCalled();
     // La fila del jugador sigue viva: las FK de los partidos tienen que resolver.
     const update = prisma.player.update.mock.calls[0][0];
-    expect(update.data.name).toBe('Socio retirado');
-    expect(update.data.anonymized_at).toBeInstanceOf(Date);
+    expect(update.data.deactivated_at).toBeInstanceOf(Date);
     expect(update.data.position).toBeNull();
+  });
+
+  it('CONSERVA el nombre real: el historial del rival tiene que seguir legible', async () => {
+    const { service, prisma } = build({ challenges: 7 });
+
+    await service.deletePlayer(jugador.id);
+
+    // Renombrarlo dejaría el fixture como "Socio retirado 6-1 6-2", sin decir
+    // contra quién se jugó.
+    expect(prisma.player.update.mock.calls[0][0].data).not.toHaveProperty('name');
   });
 
   it('el mensaje dice cuántos partidos se conservan y por qué', async () => {
@@ -87,14 +95,15 @@ describe('AdminPlayersService — baja de socios', () => {
     expect(res.message).toContain('7 desafío');
     expect(res.message).toContain('2 partido');
     expect(res.message).toContain('rivales');
+    expect(res.message).toContain('a su nombre');
   });
 
   it('una reserva también cuenta como historial', async () => {
     const { service } = build({ reservations: 1 });
-    expect((await service.deletePlayer(jugador.id)).mode).toBe('anonymized');
+    expect((await service.deletePlayer(jugador.id)).mode).toBe('deactivated');
   });
 
-  it('deja los datos personales en blanco y la cuenta sin poder entrar', async () => {
+  it('deja los datos de contacto en blanco y la cuenta sin poder entrar', async () => {
     const { service, prisma } = build({ challenges: 1 });
 
     await service.deletePlayer(jugador.id);
@@ -128,7 +137,7 @@ describe('AdminPlayersService — baja de socios', () => {
   });
 
   it('no da de baja dos veces al mismo', async () => {
-    const { service } = build({}, { ...jugador, anonymized_at: new Date() } as any);
+    const { service } = build({}, { ...jugador, deactivated_at: new Date() } as any);
     await expect(service.deletePlayer(jugador.id)).rejects.toThrow(ConflictException);
   });
 

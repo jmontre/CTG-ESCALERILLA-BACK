@@ -166,12 +166,12 @@ export class AppLogger {
   playerDeleted(name: string) {
     this.logger.warn(`🗑️  USUARIO ELIMINADO | ${name}`);
   }
-  playerAnonymized(name: string, footprint: Record<string, number>) {
+  playerDeactivated(name: string, footprint: Record<string, number>) {
     const rastro = Object.entries(footprint)
       .filter(([, n]) => n > 0)
       .map(([k, n]) => `${k}: ${n}`)
       .join(', ');
-    this.logger.warn(`🕶️  USUARIO ANONIMIZADO | ${name} | conserva ${rastro}`);
+    this.logger.warn(`🚪 CUENTA DADA DE BAJA | ${name} | conserva ${rastro}`);
   }
   playerMoved(name: string, from: number, to: number) {
     this.logger.log(`↕️  MOVIMIENTO MANUAL | ${name} | #${from} → #${to}`);
