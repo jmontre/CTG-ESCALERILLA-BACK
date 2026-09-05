@@ -87,6 +87,15 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales incorrectas');
     }
 
+    // La baja es un soft delete: la contraseña sigue siendo válida a propósito,
+    // para que restaurar la cuenta la devuelva entera. El bloqueo va acá.
+    if (user.player?.deactivated_at) {
+      this.appLogger.loginFailed(dto.username);
+      throw new UnauthorizedException(
+        'Esta cuenta está dada de baja. Habla con la comisión para reactivarla.',
+      );
+    }
+
     const token = this.generateToken(user.id, user.is_admin, user.admin_role);
     this.appLogger.login(user.player?.name || user.username, user.username);
 
@@ -122,6 +131,10 @@ export class AuthService {
       include: { player: true },
     });
     if (!user) throw new UnauthorizedException('Usuario no encontrado');
+    // Corta también las sesiones ya abiertas: el token sigue firmado pero deja
+    // de resolver en cuanto se da de baja la cuenta.
+    if (user.player?.deactivated_at)
+      throw new UnauthorizedException('Esta cuenta está dada de baja');
     return {
       user: {
         id: user.id,

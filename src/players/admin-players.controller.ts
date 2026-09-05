@@ -45,6 +45,12 @@ export class AdminPlayersController {
     return this.adminService.movePlayer(id, data.newPosition);
   }
 
+  /** Cuentas dadas de baja. Es la única vista donde aparecen. */
+  @Get('deactivated')
+  async getDeactivatedPlayers() {
+    return this.adminService.getDeactivatedPlayers();
+  }
+
   /**
    * Reordena la escalerilla completa (drag & drop del panel). Va ANTES de las
    * rutas con `:id` para que "reorder" no se lea como un id de jugador.
@@ -52,6 +58,18 @@ export class AdminPlayersController {
   @Post('reorder')
   async reorderLadder(@Body() body: { player_ids: string[] }) {
     return this.adminService.reorderLadder(body?.player_ids ?? []);
+  }
+
+  /** Deshace la baja de la cuenta: el socio vuelve entero. */
+  @Post(':id/restore')
+  async restorePlayer(@Param('id') id: string) {
+    return this.adminService.restorePlayer(id);
+  }
+
+  /** Borrado definitivo. Solo cuentas ya dadas de baja y sin ningún partido. */
+  @Delete(':id/purge')
+  async purgePlayer(@Param('id') id: string) {
+    return this.adminService.purgePlayer(id);
   }
 
   /** Baja de la escalerilla conservando todos los datos del jugador. */

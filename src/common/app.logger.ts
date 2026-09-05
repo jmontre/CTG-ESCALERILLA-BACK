@@ -171,7 +171,12 @@ export class AppLogger {
       .filter(([, n]) => n > 0)
       .map(([k, n]) => `${k}: ${n}`)
       .join(', ');
-    this.logger.warn(`🚪 CUENTA DADA DE BAJA | ${name} | conserva ${rastro}`);
+    this.logger.warn(
+      `🚪 CUENTA DADA DE BAJA | ${name}${rastro ? ` | conserva ${rastro}` : ''}`,
+    );
+  }
+  playerRestored(name: string) {
+    this.logger.log(`↩️  CUENTA RESTAURADA | ${name}`);
   }
   playerMoved(name: string, from: number, to: number) {
     this.logger.log(`↕️  MOVIMIENTO MANUAL | ${name} | #${from} → #${to}`);

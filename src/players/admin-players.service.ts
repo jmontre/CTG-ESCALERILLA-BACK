@@ -8,7 +8,6 @@ import { LadderService } from '../ladder/ladder.service';
 import { AppLogger } from '../common/app.logger';
 import { chileWeekBoundsFromStr, currentChileDate } from '../common/dates';
 import * as bcrypt from 'bcryptjs';
-import { randomBytes } from 'crypto';
 
 @Injectable()
 export class AdminPlayersService {
@@ -94,8 +93,15 @@ export class AdminPlayersService {
   }) {
     const existing = await this.prisma.user.findFirst({
       where: { OR: [{ username: data.username }, { email: data.email }] },
+      include: { player: { select: { name: true, deactivated_at: true } } },
     });
 
+    if (existing?.player?.deactivated_at)
+      throw new ConflictException(
+        `Ese username o email es de la cuenta de ${existing.player.name}, que está ` +
+          `dada de baja. Restáurala en vez de crear una nueva: vuelve con su récord ` +
+          `y su historial.`,
+      );
     if (existing) throw new ConflictException('Username o email ya existe');
 
     const password_hash = await bcrypt.hash(data.password, 10);
@@ -242,62 +248,125 @@ export class AdminPlayersService {
   }
 
   /**
-   * Da de baja la cuenta de un socio.
+   * Da de baja la cuenta de un socio. **Es un soft delete: se deshace.**
    *
-   * Si nunca jugó ni reservó nada (cuenta creada por error), se borra de
-   * verdad. Si tiene historial, se **desactiva**: desaparece de los listados y
-   * no puede volver a entrar, pero su fila sigue viva **y con su nombre**, así
-   * los partidos que jugó se siguen leyendo en el fixture y en el historial de
-   * sus rivales.
+   * No se borra ni se pisa NADA — nombre, email, teléfono, avatar, contraseña,
+   * récord e historial quedan tal cual. Lo único que cambia es `deactivated_at`
+   * (que lo saca de todos los listados y le bloquea el login) y la salida de la
+   * escalerilla, compactando los puestos.
    *
-   * Borrarlo de verdad no era opción: `challenges` y `master_matches`
-   * referencian a los DOS jugadores, así que llevárselos borraría también el
-   * historial del rival y descuadraría el fixture del club. Antes esto ni
-   * siquiera llegaba a pasar — la FK lo bloqueaba y el endpoint devolvía 500.
+   * Así el día que el socio vuelve, `restorePlayer` lo devuelve entero, con su
+   * misma cuenta y su misma contraseña.
+   *
+   * Borrar de verdad no es opción: `challenges` y `master_matches` referencian
+   * a los DOS jugadores, así que llevárselos borraría también el historial del
+   * rival y descuadraría el fixture. Antes esto ni siquiera llegaba a pasar —
+   * la FK lo bloqueaba y el endpoint devolvía 500.
    */
   async deletePlayer(id: string) {
-    const player = await this.prisma.player.findUnique({
-      where: { id },
-      include: { user: true },
-    });
+    const player = await this.prisma.player.findUnique({ where: { id } });
     if (!player) throw new NotFoundException('Jugador no encontrado');
     if (player.deactivated_at)
       throw new ConflictException(`${player.name} ya está dado de baja`);
 
     const huella = await this.footprint(id);
-    const tieneHistorial = Object.values(huella).some((n) => n > 0);
 
-    // Salir de la escalerilla primero: deja las posiciones compactadas y sin
-    // huecos, gane el camino que gane después.
+    // Sale de la escalerilla primero: deja las posiciones compactadas.
     if (player.position != null) await this.ladder.retire(id, 'account_closed');
 
-    if (!tieneHistorial) {
-      // Cuenta sin rastro: se borra de verdad. Lo poco que cuelga de ella
-      // (notificaciones, historial de ranking) se limpia antes, porque no
-      // tiene ON DELETE CASCADE.
-      await this.prisma.$transaction([
-        this.prisma.notification.deleteMany({ where: { player_id: id } }),
-        this.prisma.rankingHistory.deleteMany({ where: { player_id: id } }),
-        this.prisma.user.delete({ where: { id: player.user_id } }),
-      ]);
-      this.appLogger.playerDeleted(player.name);
-      return {
-        message: `${player.name} fue eliminado. No tenía partidos ni reservas registradas.`,
-        mode: 'deleted' as const,
-      };
-    }
+    await this.prisma.player.update({
+      where: { id },
+      data: {
+        deactivated_at: new Date(),
+        // Lo único que se apaga además de la baja: no tiene sentido guardarle
+        // un partido de ingreso pendiente a una cuenta cerrada.
+        entry_match_available: false,
+      },
+    });
 
-    await this.deactivate(player);
     this.appLogger.playerDeactivated(player.name, huella);
+    const jugados = huella.challenges + huella.masterMatches;
     return {
       message:
         `${player.name} fue dado de baja: ya no aparece en la app ni puede entrar. ` +
-        `Sus ${huella.challenges} desafío(s) y ${huella.masterMatches} partido(s) de ` +
-        `Master siguen en el historial del club a su nombre, para no borrárselos ` +
-        `también a sus rivales.`,
+        (jugados > 0
+          ? `Sus ${jugados} partido(s) siguen en el historial del club a su nombre. `
+          : '') +
+        `No se borró nada: si vuelve, lo restauras con su misma cuenta.`,
       mode: 'deactivated' as const,
       footprint: huella,
     };
+  }
+
+  /** Los dados de baja, para el panel. Es la única vista que los muestra. */
+  async getDeactivatedPlayers() {
+    return this.prisma.player.findMany({
+      where: { deactivated_at: { not: null } },
+      orderBy: { deactivated_at: 'desc' },
+      include: {
+        user: { select: { username: true, is_admin: true, admin_role: true } },
+      },
+    });
+  }
+
+  /**
+   * Deshace la baja: el socio vuelve con su cuenta, su contraseña y su récord
+   * intactos. Queda FUERA de la escalerilla, como cualquier reincorporación:
+   * el puesto se lo da el admin o se lo gana en su partido de ingreso.
+   */
+  async restorePlayer(id: string) {
+    const player = await this.prisma.player.findUnique({ where: { id } });
+    if (!player) throw new NotFoundException('Jugador no encontrado');
+    if (!player.deactivated_at)
+      throw new ConflictException(`${player.name} no está dado de baja`);
+
+    await this.prisma.player.update({
+      where: { id },
+      data: { deactivated_at: null },
+    });
+    this.appLogger.playerRestored(player.name);
+
+    return {
+      message:
+        `${player.name} vuelve a estar activo, con su cuenta y su récord de siempre. ` +
+        `Queda fuera de la escalerilla: reincorpóralo para darle un puesto.`,
+      player: player.name,
+    };
+  }
+
+  /**
+   * Borrado definitivo. Solo para cuentas ya dadas de baja y **sin ningún
+   * rastro** — la creada por error, con el nombre mal escrito.
+   *
+   * La guarda no es paranoia: con un solo partido jugado, borrar esta fila se
+   * lleva el desafío del historial del rival. Por eso el camino normal es la
+   * baja, y esto es la excepción para limpiar basura.
+   */
+  async purgePlayer(id: string) {
+    const player = await this.prisma.player.findUnique({ where: { id } });
+    if (!player) throw new NotFoundException('Jugador no encontrado');
+    if (!player.deactivated_at)
+      throw new ConflictException(
+        `Primero da de baja a ${player.name}. El borrado definitivo es solo para ` +
+          `cuentas ya dadas de baja.`,
+      );
+
+    const huella = await this.footprint(id);
+    const jugados = Object.values(huella).reduce((a, b) => a + b, 0);
+    if (jugados > 0)
+      throw new ConflictException(
+        `${player.name} no se puede borrar: tiene ${huella.challenges} desafío(s), ` +
+          `${huella.masterMatches} partido(s) de Master y ${huella.reservations} reserva(s) ` +
+          `que también están en el historial de otros socios. Déjalo dado de baja.`,
+      );
+
+    await this.prisma.$transaction([
+      this.prisma.notification.deleteMany({ where: { player_id: id } }),
+      this.prisma.rankingHistory.deleteMany({ where: { player_id: id } }),
+      this.prisma.user.delete({ where: { id: player.user_id } }),
+    ]);
+    this.appLogger.playerDeleted(player.name);
+    return { message: `${player.name} fue eliminado definitivamente.` };
   }
 
   /** Qué dejó este jugador en la base. Cero en todo = cuenta sin rastro. */
@@ -316,55 +385,6 @@ export class AdminPlayersService {
         this.prisma.seasonStanding.count({ where: { player_id: playerId } }),
       ]);
     return { challenges, masterMatches, reservations, standings };
-  }
-
-  /**
-   * Cierra la cuenta: sin datos de contacto y sin poder iniciar sesión, pero
-   * con la fila viva para que las FK de partidos y reservas sigan resolviendo.
-   *
-   * **El `name` NO se toca.** Es lo único que se conserva a propósito: sin él,
-   * el fixture del club y el historial del rival mostrarían "Socio retirado
-   * 6-1 6-2" sin decir contra quién se jugó.
-   *
-   * `email` y `username` son únicos y se liberan con un sufijo del id, así la
-   * persona puede volver a registrarse más adelante con los mismos datos.
-   */
-  private async deactivate(player: { id: string; user_id: string }) {
-    const sufijo = player.id.slice(0, 8);
-
-    const [updated] = await this.prisma.$transaction([
-      this.prisma.player.update({
-        where: { id: player.id },
-        data: {
-          email: `retirado-${sufijo}@ctg.invalid`,
-          phone: null,
-          avatar_url: null,
-          position: null,
-          entry_match_available: false,
-          immune_until: null,
-          vulnerable_until: null,
-          has_debt: false,
-          school_names: [],
-          parent_id: null,
-          deactivated_at: new Date(),
-        },
-      }),
-      // Las notificaciones son suyas y no le sirven a nadie más.
-      this.prisma.notification.deleteMany({ where: { player_id: player.id } }),
-      // Contraseña imposible de usar: la cuenta no vuelve a entrar.
-      this.prisma.user.update({
-        where: { id: player.user_id },
-        data: {
-          username: `retirado-${sufijo}`,
-          email: `retirado-${sufijo}@ctg.invalid`,
-          password_hash: randomBytes(48).toString('hex'),
-          is_admin: false,
-          admin_role: null,
-        },
-      }),
-    ]);
-
-    return updated;
   }
 
   /**
