@@ -45,6 +45,15 @@ export class AdminPlayersController {
     return this.adminService.movePlayer(id, data.newPosition);
   }
 
+  /**
+   * Reordena la escalerilla completa (drag & drop del panel). Va ANTES de las
+   * rutas con `:id` para que "reorder" no se lea como un id de jugador.
+   */
+  @Post('reorder')
+  async reorderLadder(@Body() body: { player_ids: string[] }) {
+    return this.adminService.reorderLadder(body?.player_ids ?? []);
+  }
+
   /** Baja de la escalerilla conservando todos los datos del jugador. */
   @Post(':id/retire')
   async retireFromLadder(@Param('id') id: string) {

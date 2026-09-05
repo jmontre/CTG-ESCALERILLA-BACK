@@ -8,6 +8,7 @@ import { LadderService } from '../ladder/ladder.service';
 import { AppLogger } from '../common/app.logger';
 import { chileWeekBoundsFromStr, currentChileDate } from '../common/dates';
 import * as bcrypt from 'bcryptjs';
+import { randomBytes } from 'crypto';
 
 @Injectable()
 export class AdminPlayersService {
@@ -240,56 +241,198 @@ export class AdminPlayersService {
     return result;
   }
 
+  /**
+   * Da de baja la cuenta de un socio.
+   *
+   * Si nunca jugó ni reservó nada (cuenta creada por error), se borra de
+   * verdad. Si tiene historial, se **anonimiza**: el socio desaparece de la
+   * app y de la escalerilla, pero sus partidos siguen existiendo como "Socio
+   * retirado".
+   *
+   * Borrarlo de verdad no era opción: `challenges` y `master_matches`
+   * referencian a los DOS jugadores, así que llevárselos borraría también el
+   * historial del rival y descuadraría el fixture del club. Antes esto ni
+   * siquiera llegaba a pasar — la FK lo bloqueaba y el endpoint devolvía 500.
+   */
   async deletePlayer(id: string) {
     const player = await this.prisma.player.findUnique({
       where: { id },
       include: { user: true },
     });
     if (!player) throw new NotFoundException('Jugador no encontrado');
-    await this.prisma.user.delete({ where: { id: player.user_id } });
-    return { message: 'Jugador eliminado correctamente' };
+    if (player.anonymized_at)
+      throw new ConflictException(`${player.name} ya está dado de baja`);
+
+    const huella = await this.footprint(id);
+    const tieneHistorial = Object.values(huella).some((n) => n > 0);
+
+    // Salir de la escalerilla primero: deja las posiciones compactadas y sin
+    // huecos, gane el camino que gane después.
+    if (player.position != null) await this.ladder.retire(id, 'account_closed');
+
+    if (!tieneHistorial) {
+      // Cuenta sin rastro: se borra de verdad. Lo poco que cuelga de ella
+      // (notificaciones, historial de ranking) se limpia antes, porque no
+      // tiene ON DELETE CASCADE.
+      await this.prisma.$transaction([
+        this.prisma.notification.deleteMany({ where: { player_id: id } }),
+        this.prisma.rankingHistory.deleteMany({ where: { player_id: id } }),
+        this.prisma.user.delete({ where: { id: player.user_id } }),
+      ]);
+      this.appLogger.playerDeleted(player.name);
+      return {
+        message: `${player.name} fue eliminado. No tenía partidos ni reservas registradas.`,
+        mode: 'deleted' as const,
+      };
+    }
+
+    const anonymized = await this.anonymize(player);
+    this.appLogger.playerAnonymized(player.name, huella);
+    return {
+      message:
+        `${player.name} fue dado de baja. Sus ${huella.challenges} desafío(s) y ` +
+        `${huella.masterMatches} partido(s) de Master siguen en el historial del club ` +
+        `a nombre de "${anonymized.name}", para no borrárselos también a sus rivales.`,
+      mode: 'anonymized' as const,
+      footprint: huella,
+    };
   }
 
+  /** Qué dejó este jugador en la base. Cero en todo = cuenta sin rastro. */
+  private async footprint(playerId: string) {
+    const [challenges, masterMatches, reservations, standings] =
+      await Promise.all([
+        this.prisma.challenge.count({
+          where: {
+            OR: [{ challenger_id: playerId }, { challenged_id: playerId }],
+          },
+        }),
+        this.prisma.masterMatch.count({
+          where: { OR: [{ player1_id: playerId }, { player2_id: playerId }] },
+        }),
+        this.prisma.reservation.count({ where: { player_id: playerId } }),
+        this.prisma.seasonStanding.count({ where: { player_id: playerId } }),
+      ]);
+    return { challenges, masterMatches, reservations, standings };
+  }
+
+  /**
+   * Deja la cuenta sin datos personales y sin poder iniciar sesión, pero con
+   * la fila viva para que las FK de partidos y reservas sigan resolviendo.
+   *
+   * `email` y `username` son únicos, así que no pueden quedar todos en el
+   * mismo literal: se les cuelga un sufijo del id.
+   */
+  private async anonymize(player: { id: string; user_id: string }) {
+    const sufijo = player.id.slice(0, 8);
+    const nombre = 'Socio retirado';
+
+    const [updated] = await this.prisma.$transaction([
+      this.prisma.player.update({
+        where: { id: player.id },
+        data: {
+          name: nombre,
+          email: `retirado-${sufijo}@ctg.invalid`,
+          phone: null,
+          avatar_url: null,
+          position: null,
+          entry_match_available: false,
+          immune_until: null,
+          vulnerable_until: null,
+          has_debt: false,
+          school_names: [],
+          parent_id: null,
+          anonymized_at: new Date(),
+        },
+      }),
+      // Las notificaciones son suyas y no le sirven a nadie más.
+      this.prisma.notification.deleteMany({ where: { player_id: player.id } }),
+      // Contraseña imposible de usar: la cuenta no vuelve a entrar.
+      this.prisma.user.update({
+        where: { id: player.user_id },
+        data: {
+          username: `retirado-${sufijo}`,
+          email: `retirado-${sufijo}@ctg.invalid`,
+          password_hash: randomBytes(48).toString('hex'),
+          is_admin: false,
+          admin_role: null,
+        },
+      }),
+    ]);
+
+    return updated;
+  }
+
+  /**
+   * Mueve un jugador a un puesto concreto. Delega en `LadderService.insertAt`,
+   * que hace el corrimiento en una transacción y deja historial de TODOS los
+   * que se movieron — antes tenía su propia lógica con `updateMany`, fuera de
+   * transacción y anotando solo al jugador movido.
+   */
   async movePlayer(id: string, newPosition: number) {
     const player = await this.prisma.player.findUnique({ where: { id } });
     if (!player) throw new NotFoundException('Jugador no encontrado');
 
     const oldPosition = player.position;
+    await this.ladder.insertAt(id, newPosition, 'admin_move');
+    this.appLogger.playerMoved(player.name, oldPosition ?? 0, newPosition);
 
-    if (newPosition < (oldPosition ?? 0)) {
-      await this.prisma.player.updateMany({
-        where: { position: { gte: newPosition, lt: oldPosition ?? 0 } },
-        data: { position: { increment: 1 } },
-      });
-    } else if (newPosition > (oldPosition ?? 0)) {
-      await this.prisma.player.updateMany({
-        where: { position: { gt: oldPosition ?? 0, lte: newPosition } },
-        data: { position: { decrement: 1 } },
-      });
-    }
-
-    const updated = await this.prisma.player.update({
+    return this.prisma.player.findUnique({
       where: { id },
-      data: { position: newPosition },
       include: {
         user: { select: { username: true, is_admin: true, admin_role: true } },
       },
     });
+  }
 
-    await this.prisma.rankingHistory.create({
-      data: {
-        player_id: id,
-        position: newPosition,
-        old_position: oldPosition,
-        reason: 'Movimiento manual por administrador',
-      },
-    });
+  /**
+   * Reordena la escalerilla completa de una sola vez, con el orden que el
+   * admin armó arrastrando en el panel.
+   *
+   * Exige la lista COMPLETA y exacta de los que hoy están en la escalerilla:
+   * aceptar una lista parcial dejaría fuera a quien no viniera en ella, y una
+   * pantalla desactualizada (otro admin movió a alguien, o un desafío se
+   * resolvió mientras tanto) borraría ese cambio sin avisar.
+   */
+  async reorderLadder(playerIds: string[]) {
+    const actuales = await this.ladder.ordered();
 
-    return updated;
+    if (playerIds.length !== new Set(playerIds).size)
+      throw new ConflictException('La lista trae jugadores repetidos');
+
+    const enviados = new Set(playerIds);
+    const faltan = actuales.filter((p) => !enviados.has(p.id));
+    const sobran = playerIds.filter(
+      (id) => !actuales.some((p) => p.id === id),
+    );
+
+    if (faltan.length > 0 || sobran.length > 0)
+      throw new ConflictException(
+        'La escalerilla cambió mientras editabas. Recarga el panel y vuelve a ordenarla. ' +
+          (faltan.length > 0
+            ? `Faltan en tu lista: ${faltan.map((p) => p.name).join(', ')}. `
+            : '') +
+          (sobran.length > 0
+            ? `Ya no están en la escalerilla: ${sobran.length}.`
+            : ''),
+      );
+
+    const result = await this.ladder.applyOrder(playerIds, 'admin_reorder');
+    this.appLogger.ladderReordered(result.moved, result.total);
+    return {
+      message:
+        result.moved === 0
+          ? 'No hubo cambios que guardar.'
+          : `Escalerilla actualizada: ${result.moved} jugador(es) cambiaron de puesto.`,
+      ...result,
+    };
   }
 
   async getAllPlayers() {
     return this.prisma.player.findMany({
+      // Los dados de baja desaparecen del panel; sus partidos siguen en el
+      // historial del club a nombre de "Socio retirado".
+      where: { anonymized_at: null },
       include: {
         user: { select: { username: true, is_admin: true, admin_role: true } },
         parent: { select: { id: true, name: true } },
