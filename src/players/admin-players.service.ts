@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { LadderService } from '../ladder/ladder.service';
 import { AppLogger } from '../common/app.logger';
 import { chileWeekBoundsFromStr, currentChileDate } from '../common/dates';
 import * as bcrypt from 'bcryptjs';
@@ -13,7 +14,65 @@ export class AdminPlayersService {
   constructor(
     private prisma: PrismaService,
     private appLogger: AppLogger,
+    private ladder: LadderService,
   ) {}
+
+  /**
+   * Da de baja de la escalerilla al que no juega el semestre, SIN borrar nada:
+   * conserva récord, historial, logros y temporadas jugadas, y los de abajo
+   * suben un puesto para que no quede el hueco.
+   *
+   * Es lo contrario de eliminar al jugador: el día que vuelva, se reincorpora.
+   */
+  async retireFromLadder(id: string) {
+    const result = await this.ladder.retire(id, 'left_ladder');
+    this.appLogger.playerRetired(result.player, result.from, result.moved_up);
+    return {
+      message: `${result.player} salió de la escalerilla. Sus datos quedan guardados.`,
+      ...result,
+    };
+  }
+
+  /**
+   * Reincorpora a un jugador retirado.
+   *
+   * Por defecto NO lo mete en un puesto: le habilita el partido de ingreso,
+   * donde él elige rival y se gana el lugar en la cancha. Con `position` el
+   * admin lo ubica directo, para los casos que no dan para partido.
+   */
+  async rejoinLadder(id: string, position?: number) {
+    const player = await this.prisma.player.findUnique({
+      where: { id },
+      select: { id: true, name: true, position: true },
+    });
+    if (!player) throw new NotFoundException('Jugador no encontrado');
+    if (player.position != null)
+      throw new ConflictException(`${player.name} ya está en la escalerilla`);
+
+    if (position != null) {
+      const result = await this.ladder.insertAt(id, position, 'rejoined_ladder');
+      await this.prisma.player.update({
+        where: { id },
+        data: { entry_match_available: false },
+      });
+      this.appLogger.playerRejoined(player.name, result.position);
+      return {
+        message: `${player.name} vuelve a la escalerilla en el puesto #${result.position}.`,
+        ...result,
+      };
+    }
+
+    await this.prisma.player.update({
+      where: { id },
+      data: { entry_match_available: true },
+    });
+    this.appLogger.playerRejoined(player.name, null);
+    return {
+      message: `${player.name} puede jugar su partido de ingreso para elegir puesto.`,
+      player: player.name,
+      entry_match_available: true,
+    };
+  }
 
   async createPlayer(data: {
     username: string;

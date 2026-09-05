@@ -8,7 +8,11 @@ describe('AdminPlayersService.getWeeklyHighDemandUsage', () => {
       reservation: { count: jest.fn().mockResolvedValue(usedCount) },
     };
     const appLogger: any = {};
-    return { service: new AdminPlayersService(prisma, appLogger), prisma };
+    const ladder: any = {};
+    return {
+      service: new AdminPlayersService(prisma, appLogger, ladder),
+      prisma,
+    };
   }
 
   const socio = {

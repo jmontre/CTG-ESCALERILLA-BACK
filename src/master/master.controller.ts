@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   Req,
 } from '@nestjs/common';
 import { MasterService } from './master.service';
@@ -15,14 +16,27 @@ import { Admin } from '../auth/admin.decorator';
 export class MasterController {
   constructor(private masterService: MasterService) {}
 
+  /** Cuadros de una temporada (`?season=2026-1`). Sin parámetro, la abierta. */
   @Get()
-  findAll() {
-    return this.masterService.findAll();
+  findAll(@Query('season') season?: string) {
+    return this.masterService.findAll(season);
+  }
+
+  /**
+   * Temporadas elegibles en el filtro. Va ANTES de `:category` o la ruta
+   * paramétrica se lo come ("seasons" pasaría por categoría).
+   */
+  @Get('seasons')
+  seasons() {
+    return this.masterService.seasons();
   }
 
   @Get(':category')
-  findByCategory(@Param('category') category: string) {
-    return this.masterService.findByCategory(category.toUpperCase());
+  findByCategory(
+    @Param('category') category: string,
+    @Query('season') season?: string,
+  ) {
+    return this.masterService.findByCategory(category.toUpperCase(), season);
   }
 
   @Admin()
@@ -31,7 +45,7 @@ export class MasterController {
     @Body()
     body: {
       category: string;
-      name: string;
+      name?: string;
       round_robin_start?: string;
       round_robin_end?: string;
       final_date?: string;

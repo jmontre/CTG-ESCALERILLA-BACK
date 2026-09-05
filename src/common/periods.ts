@@ -25,6 +25,11 @@ interface SeasonLike {
   started_at: Date;
 }
 
+/** "Escalerilla 2026 · 1er Semestre" → "1er Semestre". */
+export function seasonLabel(name: string, year: number): string {
+  return name.replace(/^Escalerilla\s*/i, '').replace(`${year} · `, '');
+}
+
 /**
  * Construye la lista de períodos a partir de las temporadas, ordenadas por
  * fecha de inicio ascendente.
@@ -67,10 +72,7 @@ export function buildPeriods(seasons: SeasonLike[]): Period[] {
         .map(
           (r): Period => ({
             id: r.slug,
-            // "Escalerilla 2026 · 1er Semestre" → "1er Semestre"
-            label: r.name
-              .replace(/^Escalerilla\s*/i, '')
-              .replace(`${year} · `, ''),
+            label: seasonLabel(r.name, year),
             type: 'season',
             year,
             from: r.from.toISOString(),

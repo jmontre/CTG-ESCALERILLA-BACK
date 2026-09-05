@@ -14,6 +14,7 @@ import { ReservationsModule } from './reservations/reservations.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { AchievementsModule } from './achievements/achievements.module';
 import { SeasonsModule } from './seasons/seasons.module';
+import { LadderModule } from './ladder/ladder.module';
 import { TestController } from './test/test.controller';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -30,6 +31,7 @@ import { CommonModule } from './common/common.module';
     ThrottlerModule.forRoot([{ name: 'global', ttl: 60_000, limit: 100 }]),
     ScheduleModule.forRoot(),
     PrismaModule,
+    LadderModule,
     AuthModule,
     PlayersModule,
     ChallengesModule,

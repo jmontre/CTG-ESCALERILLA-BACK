@@ -169,6 +169,16 @@ export class AppLogger {
   playerMoved(name: string, from: number, to: number) {
     this.logger.log(`↕️  MOVIMIENTO MANUAL | ${name} | #${from} → #${to}`);
   }
+  playerRetired(name: string, from: number, movedUp: number) {
+    this.logger.log(
+      `🚪 SALE DE LA ESCALERILLA | ${name} | era #${from} | ${movedUp} suben uno`,
+    );
+  }
+  playerRejoined(name: string, position: number | null) {
+    this.logger.log(
+      `🔙 REINCORPORADO | ${name} | ${position ? `#${position}` : 'pendiente de partido de ingreso'}`,
+    );
+  }
 
   // ── Master ────────────────────────────────────────────────────────────────
   masterCreated(name: string, category: string) {

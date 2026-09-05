@@ -41,6 +41,13 @@ export class SeasonsController {
     return this.seasons.standings(slug);
   }
 
+  /** Cómo quedaría el cambio de temporada, para prellenar el formulario. */
+  @Admin()
+  @Get('next')
+  next() {
+    return this.seasons.nextSeasonPreview();
+  }
+
   @Admin()
   @Post('open')
   open(@Body() body: { slug: string; name: string }) {
@@ -51,8 +58,25 @@ export class SeasonsController {
   @Post(':slug/close')
   close(
     @Param('slug') slug: string,
-    @Body() body: { master_season_name: string },
+    @Body() body: { master_season_name?: string },
   ) {
-    return this.seasons.closeSeason(slug, body.master_season_name);
+    return this.seasons.closeSeason(slug, body?.master_season_name);
+  }
+
+  /**
+   * Cambio de temporada completo: cierra, da de baja a los que no siguen y
+   * abre la siguiente. Es el botón que reemplaza los tres pasos a mano.
+   */
+  @Admin()
+  @Post('rollover')
+  rollover(
+    @Body()
+    body: {
+      retire_player_ids?: string[];
+      next_slug?: string;
+      next_name?: string;
+    },
+  ) {
+    return this.seasons.rollover(body ?? {});
   }
 }

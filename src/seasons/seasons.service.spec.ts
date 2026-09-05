@@ -3,6 +3,7 @@ import { SeasonsService } from './seasons.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AchievementsService } from '../achievements/achievements.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { LadderService } from '../ladder/ladder.service';
 
 /**
  * El podio es la parte que ve TODO el club, campeones y no campeones. Si esto
@@ -70,6 +71,11 @@ describe('SeasonsService — podio', () => {
     notification: { findFirst: jest.fn(() => Promise.resolve(null)) },
   };
   const notificationsMock: any = { create: jest.fn() };
+  const ladderMock: any = {
+    ordered: jest.fn(() => Promise.resolve([])),
+    applyOrder: jest.fn(() => Promise.resolve({ total: 0, moved: 0 })),
+    retire: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -80,6 +86,7 @@ describe('SeasonsService — podio', () => {
         { provide: PrismaService, useValue: prismaMock },
         { provide: AchievementsService, useValue: { grant: jest.fn() } },
         { provide: NotificationsService, useValue: notificationsMock },
+        { provide: LadderService, useValue: ladderMock },
       ],
     }).compile();
     service = module.get(SeasonsService);
@@ -115,5 +122,138 @@ describe('SeasonsService — podio', () => {
     expect(result.sent).toBe(0);
     expect(result.skipped).toBe(5);
     expect(notificationsMock.create).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * El reordenamiento por Master mueve a los 46 de la escalerilla, así que se
+ * verifica el orden que sale, no solo que "se llamó a algo".
+ */
+describe('SeasonsService.reorderByMaster', () => {
+  let service: SeasonsService;
+  let ladderMock: any;
+  let prismaMock: any;
+
+  /** Cuadro terminado: gana `champion`, pierde la final `finalist`. */
+  function cuadro(category: string, ids: string[]) {
+    return {
+      category,
+      groups: [
+        {
+          players: ids.map((id, i) => ({
+            player_id: id,
+            wins: ids.length - i,
+            losses: i,
+            sets_won: (ids.length - i) * 2,
+            sets_lost: i,
+          })),
+        },
+      ],
+      matches: [
+        {
+          round: 'semifinal',
+          status: 'completed',
+          player1_id: ids[2],
+          player2_id: ids[0],
+          winner_id: ids[0],
+        },
+        {
+          round: 'final',
+          status: 'completed',
+          player1_id: ids[0],
+          player2_id: ids[1],
+          winner_id: ids[0],
+        },
+      ],
+    };
+  }
+
+  /** Escalerilla de `n` jugadores: p1 en el puesto 1, p2 en el 2, etc. */
+  function escalerilla(n: number) {
+    return Array.from({ length: n }, (_, i) => ({
+      id: `p${i + 1}`,
+      name: `Jugador ${i + 1}`,
+      position: i + 1,
+    }));
+  }
+
+  async function build(masters: any[], ladderSize = 30) {
+    prismaMock = {
+      masterSeason: { findMany: jest.fn().mockResolvedValue(masters) },
+    };
+    ladderMock = {
+      ordered: jest.fn().mockResolvedValue(escalerilla(ladderSize)),
+      applyOrder: jest.fn().mockResolvedValue({ total: ladderSize, moved: 1 }),
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        SeasonsService,
+        { provide: PrismaService, useValue: prismaMock },
+        { provide: AchievementsService, useValue: { grant: jest.fn() } },
+        { provide: NotificationsService, useValue: { create: jest.fn() } },
+        { provide: LadderService, useValue: ladderMock },
+      ],
+    }).compile();
+    service = module.get(SeasonsService);
+    return { service, ladderMock };
+  }
+
+  it('sube a los del cuadro al frente de su categoría y no toca al resto', async () => {
+    // Categoría A del esquema v2 = puestos 1-14. El campeón es el que estaba 5°.
+    const { service, ladderMock } = await build([
+      cuadro('A', ['p5', 'p3', 'p1', 'p2']),
+    ]);
+
+    const result = await service.reorderByMaster('s1', 'v2');
+
+    expect(result.reordered).toEqual(['A']);
+    const [order] = ladderMock.applyOrder.mock.calls[0];
+    expect(order.slice(0, 4)).toEqual(['p5', 'p3', 'p1', 'p2']);
+    // Los que no jugaron el cuadro conservan su orden, detrás.
+    expect(order.slice(4, 7)).toEqual(['p4', 'p6', 'p7']);
+    // Y la escalerilla completa sigue teniendo a todos, una sola vez.
+    expect(order).toHaveLength(30);
+    expect(new Set(order).size).toBe(30);
+  });
+
+  it('no cruza jugadores de una categoría a otra', async () => {
+    // p20 está en categoría B (15-28) y gana el Master de B: sube al puesto 15,
+    // no al 1.
+    const { service, ladderMock } = await build([
+      cuadro('B', ['p20', 'p16', 'p15', 'p17']),
+    ]);
+
+    await service.reorderByMaster('s1', 'v2');
+
+    const [order] = ladderMock.applyOrder.mock.calls[0];
+    expect(order.slice(0, 14)).toEqual(
+      Array.from({ length: 14 }, (_, i) => `p${i + 1}`),
+    );
+    expect(order[14]).toBe('p20');
+  });
+
+  it('deja intacta la categoría cuyo cuadro no terminó', async () => {
+    const sinFinal = cuadro('A', ['p5', 'p3', 'p1', 'p2']);
+    sinFinal.matches = sinFinal.matches.filter((m) => m.round !== 'final');
+    const { service, ladderMock } = await build([sinFinal]);
+
+    const result = await service.reorderByMaster('s1', 'v2');
+
+    expect(result.reordered).toEqual([]);
+    expect(result.skipped).toEqual(['A']);
+    expect(ladderMock.applyOrder).not.toHaveBeenCalled();
+  });
+
+  it('en legacy4 conserva la cola de los que están bajo el puesto 48', async () => {
+    const { service, ladderMock } = await build(
+      [cuadro('A', ['p5', 'p3', 'p1', 'p2'])],
+      50,
+    );
+
+    await service.reorderByMaster('s1', 'legacy4');
+
+    const [order] = ladderMock.applyOrder.mock.calls[0];
+    expect(order).toHaveLength(50);
+    expect(order.slice(-2)).toEqual(['p49', 'p50']);
   });
 });
