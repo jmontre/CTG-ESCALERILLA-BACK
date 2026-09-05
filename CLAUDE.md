@@ -72,7 +72,7 @@ AppModule
 |---------|-----------|-------|
 | `/auth` | register, login, me, forgot-password, reset-password | reset por WhatsApp |
 | `/players` | lista pública (excluye admins), perfil propio (`PUT /me`), avatar | |
-| `/admin/players` | CRUD jugadores, move, **retire/rejoin**, reset-immunity/vulnerability, weekly-usage | |
+| `/admin/players` | CRUD jugadores, move, **reorder**, **retire/rejoin**, reset-immunity/vulnerability, weekly-usage | `DELETE` da de baja: anonimiza |
 | `/challenges` | create, accept, reject, result, schedule, history, **entry** + **entry/targets** | |
 | `/admin/challenges` | resolve, cancel, force delete, extend deadline, **entry-limit** (GET/POST) | |
 | `/master` | `GET /?season=`, `GET /seasons`, `GET /:cat?season=`, generate, schedule, player-result, result (admin), check-final | todo lo público va por temporada |
@@ -289,6 +289,8 @@ Una temporada es un semestre (`seasons`, slug `AÑO-SEMESTRE`). El histórico co
 
 ⚠️ **Toda escritura de posición que no venga de un resultado va por `LadderService`** (`src/ladder/`): `retire`, `insertAt`, `sendToBottom`, `applyOrder`. Ponerlas a mano fue lo que dejó la numeración con huecos (1,2,4,5) y con eso los niveles de la pirámide corridos. Los movimientos por resultado de partido siguen en `ChallengeRulesService`.
 
+**`POST /admin/players/reorder`** guarda el orden completo que el admin armó arrastrando en el panel (`LadderEditor` en el frontend). Exige la lista **exacta** de los que hoy están en la escalerilla: si falta alguien o sobra alguien —otro admin movió a un jugador, o se resolvió un desafío mientras editaba— se rechaza con 409 nombrando a los que faltan, en vez de pisar ese cambio.
+
 ---
 
 ## Partido de Ingreso
@@ -389,6 +391,7 @@ Trigger manual: `POST /cron/run` (ejecuta los dos primeros).
 - **`admin-players.service.ts` (`movePlayer`)** usa su propia lógica de movimiento de posiciones con `updateMany` increment/decrement (no delega a `ChallengeRulesService`) — verificar consistencia al modificar. (`admin-challenges.service.ts resolveChallenge` SÍ delega desde junio 2026.)
 - **`cancelChallenge` admin** revierte wins/losses pero **NO revierte** cambios de ranking (documentado en su respuesta; decisión de negocio).
 - **Cancelaciones tardías**: se discriminan por el string literal `'Cancelación tardía - turno descontado'` en queries de cupo (reservations.service y admin-players). No cambiarlo sin actualizar ambos.
-- **`AdminPlayersService.deletePlayer` falla (500) para cualquier jugador con historial**: borra el `User` esperando que cascadee, pero `RankingHistory`, `Challenge`, `MasterMatch` y `Reservation` no tienen `onDelete: Cascade` y la FK lo bloquea. Bug preexistente. Para sacar a alguien de la escalerilla, usar `retire` — que además es lo correcto: conserva sus datos.
+- **`DELETE /admin/players/:id` no borra, da de baja**: si el jugador no tiene rastro (ni desafíos, ni partidos de Master, ni reservas, ni standings) se borra de verdad; si tiene historial se **anonimiza** — queda como "Socio retirado", sin datos personales, sin login y con `anonymized_at` puesto, que es lo que lo saca de la lista pública y del panel. Borrarlo de verdad se llevaría los desafíos del historial del RIVAL y descuadraría el fixture. La respuesta trae `mode: 'deleted' | 'anonymized'`. **Al agregar un listado de jugadores nuevo, filtrar `anonymized_at: null`.**
+- Para el socio que solo deja de jugar el semestre, la operación correcta sigue siendo `retire` (sale de la escalerilla, conserva todo y puede volver), no la baja de cuenta.
 - **Posición al registrar**: `AuthService.register` (público) asigna `lastPlayer.position + 1` automáticamente. `AdminPlayersService.createPlayer` deja `position = null` si no se especifica.
 - **Pendiente fase 2** (documentado en el spec de junio 2026): granularidad de permisos por `admin_role`; cerrar/moderar el registro público; derivar `player_id` del token en vez del body; migrar de whatsapp-web.js a WhatsApp Business API; soporte multi-instancia (hoy **requiere 1 réplica** en Railway por crons y sesión WhatsApp); paginación de listados y N+1.
