@@ -8,13 +8,16 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { ChallengeRulesService } from '../challenges/challenge-rules.service';
 import { jwtModuleOptions } from '../auth/jwt.config';
 import { ReservationsModule } from '../reservations/reservations.module';
+import { ChallengesModule } from '../challenges/challenges.module';
 
 @Module({
   imports: [
     PrismaModule,
     JwtModule.registerAsync(jwtModuleOptions),
-    // La baja de un socio libera sus canchas (ver AdminPlayersService).
+    // La baja de un socio libera sus canchas y anula sus desafíos abiertos
+    // (ver AdminPlayersService.deletePlayer).
     ReservationsModule,
+    ChallengesModule,
   ],
   controllers: [PlayersController, AdminPlayersController],
   providers: [PlayersService, AdminPlayersService, ChallengeRulesService],

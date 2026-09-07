@@ -10,8 +10,15 @@ describe('AdminPlayersService.getWeeklyHighDemandUsage', () => {
     const appLogger: any = {};
     const ladder: any = {};
     const reservations: any = {};
+    const adminChallenges: any = {};
     return {
-      service: new AdminPlayersService(prisma, appLogger, ladder, reservations),
+      service: new AdminPlayersService(
+        prisma,
+        appLogger,
+        ladder,
+        reservations,
+        adminChallenges,
+      ),
       prisma,
     };
   }

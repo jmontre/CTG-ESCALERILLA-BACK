@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { LadderService } from '../ladder/ladder.service';
 import { ReservationsService } from '../reservations/reservations.service';
+import { AdminChallengesService } from '../challenges/admin-challenges.service';
 import { AppLogger } from '../common/app.logger';
 import { chileWeekBoundsFromStr, currentChileDate } from '../common/dates';
 import * as bcrypt from 'bcryptjs';
@@ -17,6 +18,7 @@ export class AdminPlayersService {
     private appLogger: AppLogger,
     private ladder: LadderService,
     private reservations: ReservationsService,
+    private adminChallenges: AdminChallengesService,
   ) {}
 
   /**
@@ -108,13 +110,9 @@ export class AdminPlayersService {
 
     const password_hash = await bcrypt.hash(data.password, 10);
 
-    // Si no tiene posición, es socio sin escalerilla (position = null)
-    let position: number | null | undefined = data.position;
-    if (position === undefined || position === null) {
-      // Solo asignar posición automática si no es hijo y no se especificó
-      position = null;
-    }
-
+    // Sin posición explícita el socio entra fuera de la escalerilla, y el
+    // puesto se lo gana en su partido de ingreso.
+    const position: number | null = data.position ?? null;
     const isAdmin = !!data.admin_role;
 
     const user = await this.prisma.user.create({
@@ -133,7 +131,10 @@ export class AdminPlayersService {
         name: data.name,
         email: data.email,
         phone: data.phone,
-        position,
+        // Nace siempre fuera de la escalerilla. Si el admin pidió un puesto, se
+        // lo da `insertAt` más abajo, que corre al resto: escribir la posición
+        // acá directamente dejaba DOS jugadores en el mismo puesto.
+        position: null,
         // El socio nuevo que entra sin puesto se gana el suyo en la cancha:
         // elige rival del tope hacia abajo y si gana entra en ese puesto.
         // Los admins quedan fuera (no juegan la escalerilla).
@@ -155,6 +156,32 @@ export class AdminPlayersService {
       data.member_type || 'socio',
       data.admin_role || undefined,
     );
+
+    // Los admins van a posición 0 por convención (excluidos de la escalerilla),
+    // así que su "posición" no pasa por el corrimiento.
+    if (position != null && !isAdmin) {
+      await this.ladder.insertAt(player.id, position, 'admin_create');
+      return this.prisma.player.findUnique({
+        where: { id: player.id },
+        include: {
+          user: { select: { username: true, is_admin: true, admin_role: true } },
+          parent: { select: { id: true, name: true } },
+          children: { select: { id: true, name: true } },
+        },
+      });
+    }
+    if (position != null && isAdmin) {
+      return this.prisma.player.update({
+        where: { id: player.id },
+        data: { position },
+        include: {
+          user: { select: { username: true, is_admin: true, admin_role: true } },
+          parent: { select: { id: true, name: true } },
+          children: { select: { id: true, name: true } },
+        },
+      });
+    }
+
     return player;
   }
 
@@ -276,6 +303,15 @@ export class AdminPlayersService {
     // Sale de la escalerilla primero: deja las posiciones compactadas.
     if (player.position != null) await this.ladder.retire(id, 'account_closed');
 
+    // Sus desafíos abiertos se anulan sin efectos: si quedaran vivos, el cron
+    // los vencería igual y movería posiciones por un partido contra alguien
+    // que ya no está en el club. Va antes de las reservas para que la cancha
+    // que hubieran reservado para ese partido entre en la misma limpieza.
+    const anulados = await this.adminChallenges.cancelOpenForPlayer(
+      id,
+      'Anulado por baja del socio',
+    );
+
     // Las canchas que tenía tomadas vuelven al club: si el socio se va, sus
     // turnos no pueden seguir bloqueados para el resto.
     const liberadas = await this.reservations.cancelActiveForPlayer(
@@ -301,12 +337,17 @@ export class AdminPlayersService {
         (jugados > 0
           ? `Sus ${jugados} partido(s) siguen en el historial del club a su nombre. `
           : '') +
+        (anulados.cancelled > 0
+          ? `Se anularon ${anulados.cancelled} desafío(s) abierto(s), sin efectos para ` +
+            `${anulados.rivals.join(', ')}. `
+          : '') +
         (liberadas.cancelled > 0
           ? `Se liberaron ${liberadas.cancelled} reserva(s) que tenía tomadas. `
           : '') +
         `No se borró nada: si vuelve, lo restauras con su misma cuenta.`,
       mode: 'deactivated' as const,
       footprint: huella,
+      cancelled_challenges: anulados,
       released_reservations: liberadas,
     };
   }

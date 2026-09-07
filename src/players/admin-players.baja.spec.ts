@@ -54,12 +54,27 @@ describe('AdminPlayersService — baja de socios', () => {
         Promise.resolve({ cancelled: huella.reservations ?? 0, slots: [] }),
       ),
     };
+    const adminChallenges: any = {
+      cancelOpenForPlayer: jest.fn(() =>
+        Promise.resolve({
+          cancelled: huella.openChallenges ?? 0,
+          rivals: huella.openChallenges ? ['Mateo Carbacho'] : [],
+        }),
+      ),
+    };
     return {
-      service: new AdminPlayersService(prisma, appLogger, ladder, reservations),
+      service: new AdminPlayersService(
+        prisma,
+        appLogger,
+        ladder,
+        reservations,
+        adminChallenges,
+      ),
       prisma,
       ladder,
       appLogger,
       reservations,
+      adminChallenges,
     };
   }
 
@@ -94,6 +109,32 @@ describe('AdminPlayersService — baja de socios', () => {
     const { service, ladder } = build({ challenges: 1 }, { ...jugador, position: null });
     await service.deletePlayer(jugador.id);
     expect(ladder.retire).not.toHaveBeenCalled();
+  });
+
+  it('anula sus desafíos abiertos, sin efectos', async () => {
+    const { service, adminChallenges } = build({ openChallenges: 1 });
+
+    const res = await service.deletePlayer(jugador.id);
+
+    expect(adminChallenges.cancelOpenForPlayer).toHaveBeenCalledWith(
+      jugador.id,
+      'Anulado por baja del socio',
+    );
+    expect(res.cancelled_challenges.cancelled).toBe(1);
+    expect(res.message).toContain('sin efectos');
+    expect(res.message).toContain('Mateo Carbacho');
+  });
+
+  it('anula los desafíos ANTES de liberar las canchas', async () => {
+    // La cancha reservada para ese partido tiene que entrar en la misma
+    // limpieza, sin importar cuál de los dos jugadores la sacó.
+    const { service, adminChallenges, reservations } = build({ openChallenges: 1 });
+
+    await service.deletePlayer(jugador.id);
+
+    const anulacion = adminChallenges.cancelOpenForPlayer.mock.invocationCallOrder[0];
+    const liberacion = reservations.cancelActiveForPlayer.mock.invocationCallOrder[0];
+    expect(anulacion).toBeLessThan(liberacion);
   });
 
   it('libera las canchas que tenía tomadas', async () => {
@@ -160,7 +201,7 @@ describe('AdminPlayersService.restorePlayer', () => {
     };
     const appLogger: any = { playerRestored: jest.fn() };
     return {
-      service: new AdminPlayersService(prisma, appLogger, {} as any, {} as any),
+      service: new AdminPlayersService(prisma, appLogger, {} as any, {} as any, {} as any),
       prisma,
       appLogger,
     };
@@ -217,7 +258,7 @@ describe('AdminPlayersService.purgePlayer', () => {
     };
     const appLogger: any = { playerDeleted: jest.fn() };
     return {
-      service: new AdminPlayersService(prisma, appLogger, {} as any, {} as any),
+      service: new AdminPlayersService(prisma, appLogger, {} as any, {} as any, {} as any),
       prisma,
     };
   }
@@ -259,7 +300,7 @@ describe('AdminPlayersService.reorderLadder', () => {
       ),
     };
     return {
-      service: new AdminPlayersService(prisma, appLogger, ladder, {} as any),
+      service: new AdminPlayersService(prisma, appLogger, ladder, {} as any, {} as any),
       ladder,
     };
   }
@@ -309,5 +350,79 @@ describe('AdminPlayersService.reorderLadder', () => {
     const res = await service.reorderLadder(['a', 'b', 'c']);
 
     expect(res.message).toBe('No hubo cambios que guardar.');
+  });
+});
+
+/**
+ * Crear un jugador con puesto explícito tiene que CORRER al resto. Escribir la
+ * posición directamente dejaba dos jugadores en el mismo puesto — pasó al
+ * probar la baja contra la base de dev: el socio nuevo y el que ya estaba
+ * quedaron los dos en #45 y el #46 vacío.
+ */
+describe('AdminPlayersService.createPlayer — posición explícita', () => {
+  function build() {
+    const creado = { id: 'nuevo', name: 'Nuevo Socio', position: null };
+    const prisma: any = {
+      user: {
+        findFirst: jest.fn(() => Promise.resolve(null)),
+        create: jest.fn(() => Promise.resolve({ id: 'u-nuevo' })),
+      },
+      player: {
+        create: jest.fn(() => Promise.resolve(creado)),
+        update: jest.fn(() => Promise.resolve(creado)),
+        findUnique: jest.fn(() => Promise.resolve({ ...creado, position: 10 })),
+      },
+    };
+    const appLogger: any = { playerCreated: jest.fn() };
+    const ladder: any = {
+      insertAt: jest.fn(() => Promise.resolve({ position: 10 })),
+    };
+    return {
+      service: new AdminPlayersService(
+        prisma,
+        appLogger,
+        ladder,
+        {} as any,
+        {} as any,
+      ),
+      prisma,
+      ladder,
+    };
+  }
+
+  const base = {
+    username: 'nuevo',
+    email: 'nuevo@ctg.cl',
+    password: 'x',
+    name: 'Nuevo Socio',
+  };
+
+  it('nace fuera de la escalerilla y entra por insertAt, que corre al resto', async () => {
+    const { service, prisma, ladder } = build();
+
+    await service.createPlayer({ ...base, position: 10 });
+
+    expect(prisma.player.create.mock.calls[0][0].data.position).toBeNull();
+    expect(ladder.insertAt).toHaveBeenCalledWith('nuevo', 10, 'admin_create');
+  });
+
+  it('sin puesto queda fuera, con su partido de ingreso disponible', async () => {
+    const { service, prisma, ladder } = build();
+
+    await service.createPlayer(base);
+
+    expect(prisma.player.create.mock.calls[0][0].data.entry_match_available).toBe(true);
+    expect(ladder.insertAt).not.toHaveBeenCalled();
+  });
+
+  it('el admin no pasa por el corrimiento: su posición es una convención', async () => {
+    const { service, prisma, ladder } = build();
+
+    await service.createPlayer({ ...base, position: 0, admin_role: 'all' });
+
+    expect(ladder.insertAt).not.toHaveBeenCalled();
+    expect(prisma.player.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { position: 0 } }),
+    );
   });
 });
