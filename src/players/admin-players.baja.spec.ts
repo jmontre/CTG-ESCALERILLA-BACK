@@ -49,11 +49,17 @@ describe('AdminPlayersService — baja de socios', () => {
       applyOrder: jest.fn(() => Promise.resolve({ total: 0, moved: 0 })),
       insertAt: jest.fn(() => Promise.resolve({ position: 5 })),
     };
+    const reservations: any = {
+      cancelActiveForPlayer: jest.fn(() =>
+        Promise.resolve({ cancelled: huella.reservations ?? 0, slots: [] }),
+      ),
+    };
     return {
-      service: new AdminPlayersService(prisma, appLogger, ladder),
+      service: new AdminPlayersService(prisma, appLogger, ladder, reservations),
       prisma,
       ladder,
       appLogger,
+      reservations,
     };
   }
 
@@ -88,6 +94,25 @@ describe('AdminPlayersService — baja de socios', () => {
     const { service, ladder } = build({ challenges: 1 }, { ...jugador, position: null });
     await service.deletePlayer(jugador.id);
     expect(ladder.retire).not.toHaveBeenCalled();
+  });
+
+  it('libera las canchas que tenía tomadas', async () => {
+    const { service, reservations } = build({ reservations: 2 });
+
+    const res = await service.deletePlayer(jugador.id);
+
+    expect(reservations.cancelActiveForPlayer).toHaveBeenCalledWith(
+      jugador.id,
+      'Cancelada por baja del socio',
+    );
+    expect(res.released_reservations.cancelled).toBe(2);
+    expect(res.message).toContain('2 reserva(s)');
+  });
+
+  it('sin reservas tomadas no menciona ninguna', async () => {
+    const { service } = build({ challenges: 1 });
+    const res = await service.deletePlayer(jugador.id);
+    expect(res.message).not.toContain('reserva');
   });
 
   it('el mensaje dice cuántos partidos se conservan y que se puede deshacer', async () => {
@@ -135,7 +160,7 @@ describe('AdminPlayersService.restorePlayer', () => {
     };
     const appLogger: any = { playerRestored: jest.fn() };
     return {
-      service: new AdminPlayersService(prisma, appLogger, {} as any),
+      service: new AdminPlayersService(prisma, appLogger, {} as any, {} as any),
       prisma,
       appLogger,
     };
@@ -192,7 +217,7 @@ describe('AdminPlayersService.purgePlayer', () => {
     };
     const appLogger: any = { playerDeleted: jest.fn() };
     return {
-      service: new AdminPlayersService(prisma, appLogger, {} as any),
+      service: new AdminPlayersService(prisma, appLogger, {} as any, {} as any),
       prisma,
     };
   }
@@ -234,7 +259,7 @@ describe('AdminPlayersService.reorderLadder', () => {
       ),
     };
     return {
-      service: new AdminPlayersService(prisma, appLogger, ladder),
+      service: new AdminPlayersService(prisma, appLogger, ladder, {} as any),
       ladder,
     };
   }

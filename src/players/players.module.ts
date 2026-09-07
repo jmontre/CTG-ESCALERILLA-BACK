@@ -7,9 +7,15 @@ import { AdminPlayersService } from './admin-players.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ChallengeRulesService } from '../challenges/challenge-rules.service';
 import { jwtModuleOptions } from '../auth/jwt.config';
+import { ReservationsModule } from '../reservations/reservations.module';
 
 @Module({
-  imports: [PrismaModule, JwtModule.registerAsync(jwtModuleOptions)],
+  imports: [
+    PrismaModule,
+    JwtModule.registerAsync(jwtModuleOptions),
+    // La baja de un socio libera sus canchas (ver AdminPlayersService).
+    ReservationsModule,
+  ],
   controllers: [PlayersController, AdminPlayersController],
   providers: [PlayersService, AdminPlayersService, ChallengeRulesService],
   exports: [PlayersService],

@@ -166,13 +166,20 @@ export class AppLogger {
   playerDeleted(name: string) {
     this.logger.warn(`🗑️  USUARIO ELIMINADO | ${name}`);
   }
-  playerDeactivated(name: string, footprint: Record<string, number>) {
+  playerDeactivated(
+    name: string,
+    footprint: Record<string, number>,
+    releasedReservations = 0,
+  ) {
     const rastro = Object.entries(footprint)
       .filter(([, n]) => n > 0)
       .map(([k, n]) => `${k}: ${n}`)
       .join(', ');
     this.logger.warn(
-      `🚪 CUENTA DADA DE BAJA | ${name}${rastro ? ` | conserva ${rastro}` : ''}`,
+      `🚪 CUENTA DADA DE BAJA | ${name}${rastro ? ` | conserva ${rastro}` : ''}` +
+        (releasedReservations > 0
+          ? ` | libera ${releasedReservations} reserva(s)`
+          : ''),
     );
   }
   playerRestored(name: string) {

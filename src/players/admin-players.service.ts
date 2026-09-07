@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { LadderService } from '../ladder/ladder.service';
+import { ReservationsService } from '../reservations/reservations.service';
 import { AppLogger } from '../common/app.logger';
 import { chileWeekBoundsFromStr, currentChileDate } from '../common/dates';
 import * as bcrypt from 'bcryptjs';
@@ -15,6 +16,7 @@ export class AdminPlayersService {
     private prisma: PrismaService,
     private appLogger: AppLogger,
     private ladder: LadderService,
+    private reservations: ReservationsService,
   ) {}
 
   /**
@@ -274,6 +276,13 @@ export class AdminPlayersService {
     // Sale de la escalerilla primero: deja las posiciones compactadas.
     if (player.position != null) await this.ladder.retire(id, 'account_closed');
 
+    // Las canchas que tenía tomadas vuelven al club: si el socio se va, sus
+    // turnos no pueden seguir bloqueados para el resto.
+    const liberadas = await this.reservations.cancelActiveForPlayer(
+      id,
+      'Cancelada por baja del socio',
+    );
+
     await this.prisma.player.update({
       where: { id },
       data: {
@@ -284,7 +293,7 @@ export class AdminPlayersService {
       },
     });
 
-    this.appLogger.playerDeactivated(player.name, huella);
+    this.appLogger.playerDeactivated(player.name, huella, liberadas.cancelled);
     const jugados = huella.challenges + huella.masterMatches;
     return {
       message:
@@ -292,9 +301,13 @@ export class AdminPlayersService {
         (jugados > 0
           ? `Sus ${jugados} partido(s) siguen en el historial del club a su nombre. `
           : '') +
+        (liberadas.cancelled > 0
+          ? `Se liberaron ${liberadas.cancelled} reserva(s) que tenía tomadas. `
+          : '') +
         `No se borró nada: si vuelve, lo restauras con su misma cuenta.`,
       mode: 'deactivated' as const,
       footprint: huella,
+      released_reservations: liberadas,
     };
   }
 
