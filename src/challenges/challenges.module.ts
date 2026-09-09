@@ -12,6 +12,6 @@ import { AchievementsModule } from '../achievements/achievements.module';
   imports: [PrismaModule, NotificationsModule, AchievementsModule],
   controllers: [ChallengesController, AdminChallengesController],
   providers: [ChallengesService, AdminChallengesService, ChallengeRulesService],
-  exports: [ChallengesService, ChallengeRulesService],
+  exports: [ChallengesService, ChallengeRulesService, AdminChallengesService],
 })
 export class ChallengesModule {}

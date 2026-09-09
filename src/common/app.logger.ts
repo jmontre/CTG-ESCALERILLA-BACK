@@ -166,8 +166,32 @@ export class AppLogger {
   playerDeleted(name: string) {
     this.logger.warn(`🗑️  USUARIO ELIMINADO | ${name}`);
   }
+  playerDeactivated(
+    name: string,
+    footprint: Record<string, number>,
+    releasedReservations = 0,
+  ) {
+    const rastro = Object.entries(footprint)
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${k}: ${n}`)
+      .join(', ');
+    this.logger.warn(
+      `🚪 CUENTA DADA DE BAJA | ${name}${rastro ? ` | conserva ${rastro}` : ''}` +
+        (releasedReservations > 0
+          ? ` | libera ${releasedReservations} reserva(s)`
+          : ''),
+    );
+  }
+  playerRestored(name: string) {
+    this.logger.log(`↩️  CUENTA RESTAURADA | ${name}`);
+  }
   playerMoved(name: string, from: number, to: number) {
     this.logger.log(`↕️  MOVIMIENTO MANUAL | ${name} | #${from} → #${to}`);
+  }
+  ladderReordered(moved: number, total: number) {
+    this.logger.log(
+      `🔀 ESCALERILLA REORDENADA | ${moved} de ${total} jugadores cambiaron de puesto`,
+    );
   }
   playerRetired(name: string, from: number, movedUp: number) {
     this.logger.log(

@@ -82,3 +82,119 @@ describe('ReservationsService.getAvailability — nombres de compañero/visita',
     expect(s.reservation.guest_name).toBe('Pedro Visitante');
   });
 });
+
+/**
+ * Cancelación de las canchas de un socio al darlo de baja.
+ *
+ * Lo delicado es el corte de fechas: las de más adelante se liberan, y las que
+ * ya ocurrieron no se tocan (esas las cierra el cron marcándolas `completed`;
+ * pisarlas diría que se canceló un partido que sí se jugó).
+ */
+describe('ReservationsService.cancelActiveForPlayer', () => {
+  let service: ReservationsService;
+  let prisma: any;
+
+  /** `date` se guarda como medianoche UTC, igual que en la base (@db.Date). */
+  const dia = (offsetDias: number) => {
+    const d = new Date();
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + offsetDias);
+    return d;
+  };
+
+  async function build(reservas: any[]) {
+    prisma = {
+      reservation: {
+        findMany: jest.fn().mockResolvedValue(reservas),
+        updateMany: jest.fn(),
+      },
+      challenge: { update: jest.fn() },
+      masterMatch: { update: jest.fn() },
+      $transaction: jest.fn().mockResolvedValue([]),
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        ReservationsService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: AppLogger, useValue: {} },
+        { provide: NotificationsService, useValue: { create: jest.fn() } },
+        { provide: AchievementsService, useValue: {} },
+      ],
+    }).compile();
+    service = module.get(ReservationsService);
+  }
+
+  const futura = {
+    id: 'r1',
+    date: dia(3),
+    time_slot: '18:15',
+    challenge_id: null,
+    master_match_id: null,
+    court: { name: 'Cancha 1' },
+  };
+
+  it('libera las reservas que todavía no se juegan', async () => {
+    await build([futura]);
+
+    const res = await service.cancelActiveForPlayer('p1', 'Cancelada por baja del socio');
+
+    expect(res.cancelled).toBe(1);
+    expect(res.slots[0]).toContain('18:15');
+    expect(res.slots[0]).toContain('Cancha 1');
+  });
+
+  it('marca el motivo, para distinguirlas de una cancelación tardía', async () => {
+    await build([futura]);
+
+    await service.cancelActiveForPlayer('p1', 'Cancelada por baja del socio');
+
+    // La cancelación tardía descuenta el cupo semanal por su literal exacto;
+    // esta no debe caer en esa cuenta.
+    const args = prisma.reservation.updateMany.mock.calls[0][0];
+    expect(args.data.cancel_reason).toBe('Cancelada por baja del socio');
+    expect(args.data.status).toBe('cancelled');
+    expect(args.where.id.in).toEqual(['r1']);
+  });
+
+  it('no toca las que ya ocurrieron', async () => {
+    await build([{ ...futura, id: 'r-viejo', date: dia(-2) }]);
+
+    const res = await service.cancelActiveForPlayer('p1', 'baja');
+
+    expect(res.cancelled).toBe(0);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('solo pide a la base las reservas activas del jugador, de hoy en adelante', async () => {
+    await build([]);
+
+    await service.cancelActiveForPlayer('p1', 'baja');
+
+    const { where } = prisma.reservation.findMany.mock.calls[0][0];
+    expect(where.player_id).toBe('p1');
+    expect(where.status).toBe('active');
+    expect(where.date.gte).toBeInstanceOf(Date);
+  });
+
+  it('deja sin fecha el desafío que tenía cancha reservada', async () => {
+    await build([{ ...futura, challenge_id: 'c1' }]);
+
+    await service.cancelActiveForPlayer('p1', 'baja');
+
+    expect(prisma.challenge.update).toHaveBeenCalledWith({
+      where: { id: 'c1' },
+      data: { scheduled_date: null },
+    });
+  });
+
+  it('deja sin fecha el partido de Master que tenía cancha reservada', async () => {
+    await build([{ ...futura, master_match_id: 'm1' }]);
+
+    await service.cancelActiveForPlayer('p1', 'baja');
+
+    expect(prisma.masterMatch.update).toHaveBeenCalledWith({
+      where: { id: 'm1' },
+      data: { scheduled_date: null },
+    });
+  });
+});

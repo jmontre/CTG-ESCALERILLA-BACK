@@ -123,6 +123,77 @@ export class AdminChallengesService {
     return updated;
   }
 
+  /**
+   * Anula los desafíos abiertos de un jugador, **sin efectos**: nadie sube,
+   * nadie baja, nadie gana por W.O. y no se tocan las estadísticas.
+   *
+   * La usa la baja de cuenta. Sin esto, el desafío quedaba vivo y el cron lo
+   * vencía igual: movía posiciones por un partido contra alguien que ya no
+   * está en el club, dándole un W.O. al rival o penalizándolo por no jugar.
+   *
+   * Al rival se le avisa, porque estaba esperando ese partido.
+   */
+  async cancelOpenForPlayer(playerId: string, reason: string) {
+    const abiertos = await this.prisma.challenge.findMany({
+      where: {
+        OR: [{ challenger_id: playerId }, { challenged_id: playerId }],
+        status: { in: ['pending', 'accepted'] },
+      },
+      include: {
+        challenger: { select: { id: true, name: true } },
+        challenged: { select: { id: true, name: true } },
+      },
+    });
+
+    const rivales: string[] = [];
+    for (const challenge of abiertos) {
+      // Claim atómico: si el cron lo está venciendo en este mismo momento, uno
+      // de los dos pierde y no se procesa dos veces (ver CLAUDE.md).
+      const claimed = await this.prisma.challenge.updateMany({
+        where: { id: challenge.id, status: { in: ['pending', 'accepted'] } },
+        data: {
+          status: 'cancelled',
+          resolved_at: new Date(),
+          final_score: reason,
+          // Sin fecha: el partido no se va a jugar, y dejarla puesta hacía que
+          // el fixture mostrara día y hora de un desafío ya anulado.
+          scheduled_date: null,
+        },
+      });
+      if (claimed.count === 0) continue;
+
+      // La cancha que hubieran reservado para jugarlo queda libre, sin importar
+      // cuál de los dos la sacó.
+      await this.prisma.reservation.updateMany({
+        where: { challenge_id: challenge.id, status: 'active' },
+        data: {
+          status: 'cancelled',
+          cancelled_at: new Date(),
+          cancel_reason: reason,
+        },
+      });
+
+      const rival =
+        challenge.challenger_id === playerId
+          ? challenge.challenged
+          : challenge.challenger;
+      rivales.push(rival.name);
+
+      this.notifyAsync(async () => {
+        await this.notificationsService.create(rival.id, {
+          type: 'challenge_cancelled',
+          title: 'Desafío anulado',
+          body:
+            `Tu desafío con ${challenge.challenger_id === playerId ? challenge.challenger.name : challenge.challenged.name} ` +
+            `se anuló porque dejó el club. No cuenta como partido y no cambia tu posición.`,
+          action_path: '/fixture',
+        });
+      });
+    }
+
+    return { cancelled: rivales.length, rivals: rivales };
+  }
+
   async cancelChallenge(challengeId: string) {
     const challenge = await this.prisma.challenge.findUnique({
       where: { id: challengeId },

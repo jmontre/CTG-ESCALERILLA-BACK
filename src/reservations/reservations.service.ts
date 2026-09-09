@@ -995,6 +995,76 @@ export class ReservationsService {
     };
   }
 
+  /**
+   * Cancela las reservas que el socio todavía no jugó. La usa la baja de
+   * cuenta: si el socio deja el club, sus canchas tienen que quedar libres
+   * para el resto en vez de bloquear turnos que nadie va a usar.
+   *
+   * Solo toca las que aún no empezaron. Las de fechas pasadas que siguen en
+   * `active` las cierra el cron marcándolas `completed`; pisarlas acá diría
+   * que se cancelaron partidos que sí se jugaron.
+   *
+   * No descuenta cupo de alta demanda (el socio se va, no tiene sentido
+   * cobrarle el turno) ni manda WhatsApp: es una baja administrativa, no una
+   * cancelación suya.
+   */
+  async cancelActiveForPlayer(playerId: string, reason: string) {
+    const desdeHoy = new Date(`${currentChileDate()}T00:00:00.000Z`);
+    const activas = await this.prisma.reservation.findMany({
+      where: {
+        player_id: playerId,
+        status: 'active',
+        date: { gte: desdeHoy },
+      },
+      include: { court: { select: { name: true } } },
+      orderBy: [{ date: 'asc' }, { time_slot: 'asc' }],
+    });
+
+    const ahora = nowInChile();
+    const futuras = activas.filter((r) => {
+      const dia = r.date.toISOString().split('T')[0];
+      return new Date(`${dia}T${r.time_slot}:00`) > ahora;
+    });
+    if (futuras.length === 0) return { cancelled: 0, slots: [] as string[] };
+
+    await this.prisma.$transaction([
+      this.prisma.reservation.updateMany({
+        where: { id: { in: futuras.map((r) => r.id) } },
+        data: {
+          status: 'cancelled',
+          cancelled_at: new Date(),
+          cancel_reason: reason,
+        },
+      }),
+      // Un desafío o un partido de Master con fecha fijada en una de esas
+      // canchas vuelve a quedar sin fecha, igual que en `cancel`.
+      ...futuras
+        .filter((r) => r.challenge_id)
+        .map((r) =>
+          this.prisma.challenge.update({
+            where: { id: r.challenge_id! },
+            data: { scheduled_date: null },
+          }),
+        ),
+      ...futuras
+        .filter((r) => r.master_match_id)
+        .map((r) =>
+          this.prisma.masterMatch.update({
+            where: { id: r.master_match_id! },
+            data: { scheduled_date: null },
+          }),
+        ),
+    ]);
+
+    return {
+      cancelled: futuras.length,
+      slots: futuras.map(
+        (r) =>
+          `${toChileDateStr(r.date)} ${r.time_slot} · ${r.court?.name ?? 'cancha'}`,
+      ),
+    };
+  }
+
   async adminCancel(reservationId: string, reason?: string) {
     const reservation = await this.prisma.reservation.findUnique({
       where: { id: reservationId },

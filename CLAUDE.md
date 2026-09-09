@@ -72,7 +72,7 @@ AppModule
 |---------|-----------|-------|
 | `/auth` | register, login, me, forgot-password, reset-password | reset por WhatsApp |
 | `/players` | lista pública (excluye admins), perfil propio (`PUT /me`), avatar | |
-| `/admin/players` | CRUD jugadores, move, **retire/rejoin**, reset-immunity/vulnerability, weekly-usage | |
+| `/admin/players` | CRUD jugadores, move, **reorder**, **retire/rejoin**, reset-immunity/vulnerability, weekly-usage | `DELETE` da de baja: anonimiza |
 | `/challenges` | create, accept, reject, result, schedule, history, **entry** + **entry/targets** | |
 | `/admin/challenges` | resolve, cancel, force delete, extend deadline, **entry-limit** (GET/POST) | |
 | `/master` | `GET /?season=`, `GET /seasons`, `GET /:cat?season=`, generate, schedule, player-result, result (admin), check-final | todo lo público va por temporada |
@@ -289,6 +289,8 @@ Una temporada es un semestre (`seasons`, slug `AÑO-SEMESTRE`). El histórico co
 
 ⚠️ **Toda escritura de posición que no venga de un resultado va por `LadderService`** (`src/ladder/`): `retire`, `insertAt`, `sendToBottom`, `applyOrder`. Ponerlas a mano fue lo que dejó la numeración con huecos (1,2,4,5) y con eso los niveles de la pirámide corridos. Los movimientos por resultado de partido siguen en `ChallengeRulesService`.
 
+**`POST /admin/players/reorder`** guarda el orden completo que el admin armó arrastrando en el panel (`LadderEditor` en el frontend). Exige la lista **exacta** de los que hoy están en la escalerilla: si falta alguien o sobra alguien —otro admin movió a un jugador, o se resolvió un desafío mientras editaba— se rechaza con 409 nombrando a los que faltan, en vez de pisar ese cambio.
+
 ---
 
 ## Partido de Ingreso
@@ -386,9 +388,16 @@ Trigger manual: `POST /cron/run` (ejecuta los dos primeros).
 ## Gotchas Importantes
 
 - **`ChallengeRulesService`** se provee en `ChallengesModule` Y en `PlayersModule` (instanciado en ambos para evitar circular deps).
-- **`admin-players.service.ts` (`movePlayer`)** usa su propia lógica de movimiento de posiciones con `updateMany` increment/decrement (no delega a `ChallengeRulesService`) — verificar consistencia al modificar. (`admin-challenges.service.ts resolveChallenge` SÍ delega desde junio 2026.)
+- **Crear o mover un jugador con puesto explícito va por `LadderService.insertAt`.** `createPlayer` escribía la posición pedida tal cual, sin correr a nadie: crear un socio en el #45 dejaba DOS jugadores en el #45 y el #46 vacío. Los admins son la excepción (posición 0 por convención, fuera de la escalerilla).
 - **`cancelChallenge` admin** revierte wins/losses pero **NO revierte** cambios de ranking (documentado en su respuesta; decisión de negocio).
 - **Cancelaciones tardías**: se discriminan por el string literal `'Cancelación tardía - turno descontado'` en queries de cupo (reservations.service y admin-players). No cambiarlo sin actualizar ambos.
-- **`AdminPlayersService.deletePlayer` falla (500) para cualquier jugador con historial**: borra el `User` esperando que cascadee, pero `RankingHistory`, `Challenge`, `MasterMatch` y `Reservation` no tienen `onDelete: Cascade` y la FK lo bloquea. Bug preexistente. Para sacar a alguien de la escalerilla, usar `retire` — que además es lo correcto: conserva sus datos.
+- **`DELETE /admin/players/:id` no borra: es un soft delete.** Lo único que escribe es `deactivated_at` (y apaga `entry_match_available`), más la salida de la escalerilla compactando puestos, la anulación de sus desafíos abiertos y la liberación de sus canchas.
+  - **Desafíos abiertos** (`AdminChallengesService.cancelOpenForPlayer`): se anulan **sin efectos** — nadie sube, nadie baja, nadie gana por W.O. y no se tocan las estadísticas. Sin esto el cron los vencía igual y movía posiciones por un partido contra alguien que ya no está en el club. Usa claim atómico (el cron puede estar venciéndolos a la vez), libera la cancha del desafío la haya reservado quien la haya reservado, limpia `scheduled_date` y avisa al rival.
+  - **Reservas** (`ReservationsService.cancelActiveForPlayer`): motivo `'Cancelada por baja del socio'` — no es el literal de la cancelación tardía, así que no descuenta cupo — y solo toca las que todavía no empezaron (las pasadas las cierra el cron como `completed`). **No toca ni un dato** — nombre, email, teléfono, avatar, username, contraseña, récord y notificaciones quedan intactos — para que `POST /admin/players/:id/restore` devuelva la cuenta entera el día que el socio vuelve. Borrar de verdad se llevaría los desafíos del historial del RIVAL y descuadraría el fixture; además la FK lo bloqueaba y el endpoint devolvía 500.
+- **`deactivated_at` es lo que oculta al jugador**: `AuthService.login` y `validateTokenByUserId` lo rechazan (esto último corta también las sesiones ya abiertas), y los listados lo filtran. **Al agregar un listado de jugadores nuevo, filtrar `deactivated_at: null`.** La única vista que los muestra es `GET /admin/players/deactivated`.
+- **El `name` no se toca nunca**, a propósito: es lo que hace que el fixture y el historial del rival sigan diciendo contra quién se jugó. Se probó renombrando a "Socio retirado" y dejaba los partidos ilegibles.
+- **`DELETE /admin/players/:id/purge`** es el único borrado real, y solo para cuentas **ya dadas de baja y sin ningún rastro** (la creada por error). Con un solo partido jugado se niega, porque ese partido también es del rival.
+- Como `email` y `username` siguen ocupados, crear un jugador con los mismos datos devuelve un 409 que nombra la cuenta dada de baja y sugiere restaurarla, en vez del genérico "ya existe".
+- Para el socio que solo deja de jugar el semestre, la operación correcta sigue siendo `retire` (sale de la escalerilla, conserva todo y puede volver), no la baja de cuenta.
 - **Posición al registrar**: `AuthService.register` (público) asigna `lastPlayer.position + 1` automáticamente. `AdminPlayersService.createPlayer` deja `position = null` si no se especifica.
 - **Pendiente fase 2** (documentado en el spec de junio 2026): granularidad de permisos por `admin_role`; cerrar/moderar el registro público; derivar `player_id` del token en vez del body; migrar de whatsapp-web.js a WhatsApp Business API; soporte multi-instancia (hoy **requiere 1 réplica** en Railway por crons y sesión WhatsApp); paginación de listados y N+1.
