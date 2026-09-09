@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ChallengeRulesService } from './challenge-rules.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AchievementsService } from '../achievements/achievements.service';
+import { whatsappService } from '../notifications/whatsapp.service';
 
 @Injectable()
 export class AdminChallengesService {
@@ -107,6 +108,23 @@ export class AdminChallengesService {
         : updated.challenged.position;
 
     this.notifyAsync(async () => {
+      // El resultado se anuncia al grupo igual que en el flujo normal. Antes
+      // solo lo hacía `processDoubleConfirmation`, así que un partido resuelto
+      // por la comisión —una disputa, o un resultado cargado a mano— no se
+      // enteraba nadie: la escalerilla cambiaba sin explicación.
+      const groupId = process.env.WHATSAPP_GROUP_ID;
+      if (groupId) {
+        await whatsappService.sendGroupMessage(
+          groupId,
+          `🎾 *Escalerilla CTG — Resultado*\n\n` +
+            `🏆 *${winnerName}* venció a *${loserName}*\n` +
+            `📊 Score: *${score}*\n\n` +
+            `📈 Nuevas posiciones:\n` +
+            `  • ${winnerName}: #${winnerPosition}\n` +
+            `  • ${loserName}: #${loserPosition}`,
+        );
+      }
+
       // positionsSwapped: misma condición que ChallengeRulesService.processWin.
       await this.notificationsService.notifyMatchResult({
         winnerId,
