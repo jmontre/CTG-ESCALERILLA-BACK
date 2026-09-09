@@ -1,9 +1,14 @@
 import { Test } from '@nestjs/testing';
+import { whatsappService } from '../notifications/whatsapp.service';
 import { AdminChallengesService } from './admin-challenges.service';
 import { ChallengeRulesService } from './challenge-rules.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AchievementsService } from '../achievements/achievements.service';
+
+jest.mock('../notifications/whatsapp.service', () => ({
+  whatsappService: { sendMessage: jest.fn(), sendGroupMessage: jest.fn() },
+}));
 
 /**
  * Anulación de los desafíos abiertos al dar de baja a un socio.
@@ -154,5 +159,91 @@ describe('AdminChallengesService.cancelOpenForPlayer', () => {
 
     expect(res).toEqual({ cancelled: 0, rivals: [] });
     expect(prisma.challenge.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Un resultado cargado por la comisión —una disputa, o un partido que quedó sin
+ * cargar— tiene que anunciarse al grupo igual que uno confirmado por los
+ * jugadores. Antes solo avisaba `processDoubleConfirmation`, así que la
+ * escalerilla cambiaba sin que nadie se enterara.
+ */
+describe('AdminChallengesService.resolveChallenge — aviso al grupo', () => {
+  const GRUPO = '123@g.us';
+  const desafio = {
+    id: 'c1',
+    status: 'accepted',
+    challenger_id: 'p-desafiante',
+    challenged_id: 'p-desafiado',
+    played_at: null,
+    challenger: { id: 'p-desafiante', name: 'Luis Miranda', position: 28 },
+    challenged: { id: 'p-desafiado', name: 'Daniel Soto', position: 21 },
+  };
+
+  async function build() {
+    const prisma: any = {
+      challenge: {
+        findUnique: jest.fn().mockResolvedValue(desafio),
+        update: jest.fn().mockResolvedValue({
+          ...desafio,
+          challenger_id: 'p-desafiante',
+          challenged_id: 'p-desafiado',
+        }),
+      },
+      reservation: { updateMany: jest.fn() },
+    };
+    const rules = {
+      processWin: jest.fn(),
+      applyPostMatchStatus: jest.fn(),
+      updateStats: jest.fn(),
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        AdminChallengesService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: ChallengeRulesService, useValue: rules },
+        {
+          provide: NotificationsService,
+          useValue: { notifyMatchResult: jest.fn(), create: jest.fn() },
+        },
+        {
+          provide: AchievementsService,
+          useValue: { evaluateAfterChallenge: jest.fn() },
+        },
+      ],
+    }).compile();
+    return module.get(AdminChallengesService);
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.WHATSAPP_GROUP_ID = GRUPO;
+  });
+  afterAll(() => {
+    delete process.env.WHATSAPP_GROUP_ID;
+  });
+
+  it('anuncia el resultado al grupo, con el mismo formato del flujo normal', async () => {
+    const service = await build();
+
+    await service.resolveChallenge('c1', 'p-desafiado', '1-6, 0-6');
+    await new Promise((r) => setImmediate(r)); // notificación fire-and-forget
+
+    const [groupId, msg] = (whatsappService.sendGroupMessage as jest.Mock).mock
+      .calls[0];
+    expect(groupId).toBe(GRUPO);
+    expect(msg).toContain('Escalerilla CTG — Resultado');
+    expect(msg).toContain('*Daniel Soto* venció a *Luis Miranda*');
+    expect(msg).toContain('1-6, 0-6');
+  });
+
+  it('sin grupo configurado no falla', async () => {
+    delete process.env.WHATSAPP_GROUP_ID;
+    const service = await build();
+
+    await service.resolveChallenge('c1', 'p-desafiado', '1-6, 0-6');
+    await new Promise((r) => setImmediate(r));
+
+    expect(whatsappService.sendGroupMessage).not.toHaveBeenCalled();
   });
 });
