@@ -7,6 +7,8 @@
  * y los niveles.
  */
 
+import { parseSeasonSlug } from './season-naming';
+
 export interface Period {
   /** "all" · un año ("2026") · el slug de una temporada ("2026-1"). */
   id: string;
@@ -23,6 +25,17 @@ interface SeasonLike {
   slug: string;
   name: string;
   started_at: Date;
+}
+
+/**
+ * Año al que pertenece una temporada: el de su slug, no el de su fecha de
+ * inicio. El 2do semestre se cierra en diciembre y el 1ro del año siguiente se
+ * abre ese mismo día, así que `2027-1` arranca con `started_at` en 2026; con el
+ * año de la fecha quedaba agrupada bajo 2026 en todos los filtros.
+ * Un slug sin formato AÑO-SEMESTRE cae en el año de inicio.
+ */
+export function seasonYear(season: { slug: string; started_at: Date }): number {
+  return parseSeasonSlug(season.slug)?.year ?? season.started_at.getUTCFullYear();
 }
 
 /** "Escalerilla 2026 · 1er Semestre" → "1er Semestre". */
@@ -43,7 +56,7 @@ export function buildPeriods(seasons: SeasonLike[]): Period[] {
   const rangos = seasons.map((s, i) => ({
     slug: s.slug,
     name: s.name,
-    year: s.started_at.getUTCFullYear(),
+    year: seasonYear(s),
     from: s.started_at,
     to: seasons[i + 1]?.started_at ?? null,
   }));

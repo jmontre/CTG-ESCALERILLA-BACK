@@ -6,7 +6,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { categoryBounds } from '../common/ladder';
-import { seasonLabel } from '../common/periods';
+import { seasonLabel, seasonYear } from '../common/periods';
 import { whatsappService } from '../notifications/whatsapp.service';
 import { toChileDateStr, chileWeekBoundsFromStr } from '../common/dates';
 
@@ -130,7 +130,7 @@ export class MasterService {
     return seasons
       .filter((s) => s.master_seasons.length > 0 || s.status === 'active')
       .map((s) => {
-        const year = s.started_at.getUTCFullYear();
+        const year = seasonYear(s);
         return {
           slug: s.slug,
           name: s.name,
