@@ -184,6 +184,8 @@ describe('AdminChallengesService.resolveChallenge — aviso al grupo', () => {
     const prisma: any = {
       challenge: {
         findUnique: jest.fn().mockResolvedValue(desafio),
+        // Claim atómico de la transición (ver admin-resolve.spec.ts).
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         update: jest.fn().mockResolvedValue({
           ...desafio,
           challenger_id: 'p-desafiante',
