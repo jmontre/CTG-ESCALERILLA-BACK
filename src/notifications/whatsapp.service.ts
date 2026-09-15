@@ -2,9 +2,16 @@ import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * Espera tras `initialize()` antes de volcar un diagnóstico si el cliente no
+ * llegó a `ready`. Configurable para poder probarlo en local sin esperar.
+ */
+const READY_WATCHDOG_MS = Number(process.env.WHATSAPP_READY_WATCHDOG_MS) || 90_000;
+
 export class WhatsAppService {
   private client: Client;
   private ready = false;
+  private pageDiagnosticsAttached = false;
 
   async initialize() {
     if (process.env.WHATSAPP_ENABLED !== 'true') {
@@ -93,10 +100,31 @@ export class WhatsAppService {
     this.client.on('ready', () => {
       console.log('✅ WhatsApp conectado! 🎉');
       this.ready = true;
+      // La versión de WhatsApp Web con la que SÍ funcionó: la referencia para
+      // comparar la próxima vez que deje de llegar a `ready`.
+      void this.client
+        .getWWebVersion()
+        .then((v) => console.log(`📦 WhatsApp Web ${v}`))
+        .catch(() => undefined);
     });
 
     this.client.on('authenticated', () => {
       console.log('✅ Autenticado correctamente');
+      // El paso que sigue (inyectar los módulos de WhatsApp Web y emitir
+      // `ready`) corre DENTRO de la página de Chromium: la librería lo registra
+      // con `exposeFunction`, así que si falla, el error vuelve a la página y
+      // nunca a Node. Sin estos listeners, "autenticado y después nada" no deja
+      // rastro en los logs. Se enganchan acá porque `emit` es síncrono y el
+      // fallo ocurre después, tras varios `await`.
+      this.attachPageDiagnostics();
+    });
+
+    this.client.on('loading_screen', (percent, message) => {
+      console.log(`⏳ WhatsApp cargando: ${percent}% ${message ?? ''}`);
+    });
+
+    this.client.on('change_state', (state) => {
+      console.log(`🔁 WhatsApp cambió de estado: ${state}`);
     });
 
     this.client.on('auth_failure', () => {
@@ -111,8 +139,68 @@ export class WhatsAppService {
 
     try {
       await this.client.initialize();
+      this.attachPageDiagnostics();
+      this.scheduleReadyWatchdog();
     } catch (error) {
       console.error('❌ Error inicializando WhatsApp:', error);
+    }
+  }
+
+  /** Registra en el log de Node los errores que ocurren dentro de la página. */
+  private attachPageDiagnostics() {
+    const page = this.client?.pupPage;
+    if (!page || this.pageDiagnosticsAttached) return;
+    this.pageDiagnosticsAttached = true;
+    page.on('pageerror', (error: unknown) => {
+      const detalle = error instanceof Error ? error.message : String(error);
+      console.error('🧩 WhatsApp error en la página:', detalle);
+    });
+    // Los errores de consola solo interesan mientras no está listo: una vez
+    // conectado, WhatsApp Web emite errores de red normales (400 de recursos)
+    // que llenarían el log todo el día sin decir nada útil.
+    page.on('console', (msg) => {
+      if (msg.type() === 'error' && !this.ready) {
+        console.error('🧩 WhatsApp consola (error):', msg.text().slice(0, 500));
+      }
+    });
+  }
+
+  /**
+   * Si pasado un rato el cliente no llegó a `ready`, deja una foto de su estado:
+   * versión de WhatsApp Web y de Chromium, y qué piezas internas existen. Es lo
+   * que distingue una librería incompatible con la versión actual de WhatsApp
+   * Web de una sesión dañada en disco.
+   */
+  private scheduleReadyWatchdog() {
+    const timer = setTimeout(() => {
+      if (this.ready) return;
+      void this.logReadinessDiagnostics();
+    }, READY_WATCHDOG_MS);
+    timer.unref?.();
+  }
+
+  private async logReadinessDiagnostics() {
+    const segundos = Math.round(READY_WATCHDOG_MS / 1000);
+    console.error(`🩺 WhatsApp sigue sin 'ready' ${segundos}s después de inicializar. Diagnóstico:`);
+    try {
+      const libVersion: string = require('whatsapp-web.js/package.json').version;
+      const browserVersion = await this.client.pupBrowser?.version();
+      const page = await this.client.pupPage?.evaluate(() => {
+        const w = window as any;
+        return {
+          url: location.href,
+          waWebVersion: w.Debug?.VERSION ?? null,
+          authStore: typeof w.AuthStore,
+          appState: w.AuthStore?.AppState?.state ?? null,
+          hasSynced: w.AuthStore?.AppState?.hasSynced ?? null,
+          store: typeof w.Store,
+          wwebjs: typeof w.WWebJS,
+          requireFn: typeof w.require,
+        };
+      });
+      console.error('🩺', JSON.stringify({ libVersion, browserVersion, ...page }));
+    } catch (error) {
+      console.error('🩺 No se pudo leer el estado de la página:', (error as Error)?.message ?? error);
     }
   }
 
