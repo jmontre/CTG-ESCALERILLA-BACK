@@ -99,6 +99,9 @@ export class PlayersService {
         created_at: true,
         extra_high_demand_slots: true,
         school_names: true,
+        // Quién tiene pendiente su partido de ingreso: la escalerilla lo muestra
+        // aparte ("Por ingresar"), porque todavía no tiene puesto que dibujar.
+        entry_match_available: true,
         user: {
           select: { username: true, is_admin: true, admin_role: true },
         },

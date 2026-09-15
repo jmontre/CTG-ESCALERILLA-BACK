@@ -46,6 +46,16 @@ export class ChallengesController {
    * Va ANTES de :id, o "history" se interpretaría como un id de desafío.
    */
   /**
+   * GET /challenges/entry/limit
+   * Puesto más alto al que puede apuntar un partido de ingreso. Lo usa la
+   * escalerilla para explicar a todos contra quién puede entrar un socio nuevo.
+   */
+  @Get('entry/limit')
+  async entryLimit() {
+    return { top_limit: await this.challengesService.entryMatchTopLimit() };
+  }
+
+  /**
    * GET /challenges/entry/targets
    * Rivales elegibles para el partido de ingreso del jugador logueado.
    * Va ANTES de :id, o "entry" se leería como id de desafío.
