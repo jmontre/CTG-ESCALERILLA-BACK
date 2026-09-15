@@ -176,6 +176,10 @@ export class ChallengesService {
     return { message: 'Partido de ingreso creado', challenge };
   }
 
+  entryMatchTopLimit() {
+    return this.rules.entryMatchTopLimit();
+  }
+
   /** Rivales posibles para el partido de ingreso del jugador logueado. */
   async entryMatchTargets(playerId: string) {
     return this.rules.getEntryMatchTargets(playerId);
