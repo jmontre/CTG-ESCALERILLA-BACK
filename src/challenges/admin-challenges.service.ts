@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChallengeRulesService } from './challenge-rules.service';
@@ -25,6 +26,13 @@ export class AdminChallengesService {
     );
   }
 
+  private loadWithPlayers(challengeId: string) {
+    return this.prisma.challenge.findUnique({
+      where: { id: challengeId },
+      include: { challenger: true, challenged: true },
+    });
+  }
+
   async resolveChallenge(challengeId: string, winnerId: string, score: string) {
     const challenge = await this.prisma.challenge.findUnique({
       where: { id: challengeId },
@@ -40,6 +48,25 @@ export class AdminChallengesService {
         'El ganador debe ser uno de los jugadores del desafío',
       );
     }
+    // Ya completado ("Actualizar Resultado" en el panel, o el segundo clic de
+    // una resolución lenta): NO se vuelve a aplicar nada. Volver a correr
+    // updateStats sumaba otra victoria y otra derrota cada vez — pasó 4 veces
+    // en una semana. Con el mismo ganador solo se corrige el marcador; darlo
+    // vuelta exigiría revertir estadísticas y posiciones del resultado anterior.
+    if (challenge.status === 'completed') {
+      if (challenge.winner_id !== winnerId) {
+        throw new ConflictException(
+          'Este desafío ya está completado con otro ganador. Cambiarlo de ganador no se ' +
+            'aplica encima porque quedarían dos resultados contados. Anúlalo y vuelve a resolverlo.',
+        );
+      }
+      return this.prisma.challenge.update({
+        where: { id: challengeId },
+        data: { final_score: score },
+        include: { challenger: true, challenged: true },
+      });
+    }
+
     const loserId =
       winnerId === challenge.challenger_id
         ? challenge.challenged_id
@@ -54,41 +81,75 @@ export class AdminChallengesService {
         ? challenge.challenger.position
         : challenge.challenged.position;
 
-    // Misma lógica que el flujo normal: corrimiento + historial + inmunidad/vulnerabilidad + stats
-    await this.rules.processWin(challengeId, winnerId, loserId);
-    await this.rules.applyPostMatchStatus(winnerId, loserId);
-    await this.rules.updateStats(winnerId, loserId);
-
-    // Logros: mismo trato que el flujo normal de doble confirmación.
-    await this.achievements.evaluateAfterChallenge({
-      winnerId,
-      loserId,
-      score,
-      oldWinnerPosition,
-      oldLoserPosition,
-    });
-
-    const updated = await this.prisma.challenge.update({
-      where: { id: challengeId },
+    // Claim atómico ANTES de cualquier efecto (ver CLAUDE.md): el UPDATE
+    // condicionado por el estado leído es la exclusión mutua. Si dos peticiones
+    // leyeron el mismo estado, solo una lo reclama; la otra no aplica nada.
+    const now = new Date();
+    const claimed = await this.prisma.challenge.updateMany({
+      where: { id: challengeId, status: challenge.status },
       data: {
         status: 'completed',
         winner_id: winnerId,
         final_score: score,
-        resolved_at: new Date(),
-        played_at: challenge.played_at || new Date(),
+        resolved_at: now,
+        played_at: challenge.played_at || now,
       },
-      include: { challenger: true, challenged: true },
     });
+    if (claimed.count === 0) {
+      throw new ConflictException(
+        'Este desafío acaba de ser resuelto por otra solicitud. Recarga el panel para ver el resultado.',
+      );
+    }
 
-    // Liberar la reserva del desafío (igual que processDoubleConfirmation)
-    await this.prisma.reservation.updateMany({
-      where: { challenge_id: challengeId, status: 'active' },
-      data: {
-        status: 'cancelled',
-        cancelled_at: new Date(),
-        cancel_reason: 'Partido completado',
-      },
-    });
+    let updated: Awaited<ReturnType<typeof this.loadWithPlayers>>;
+    try {
+      // Misma lógica que el flujo normal: corrimiento + historial + inmunidad/vulnerabilidad + stats
+      await this.rules.processWin(challengeId, winnerId, loserId);
+      await this.rules.applyPostMatchStatus(winnerId, loserId);
+      await this.rules.updateStats(winnerId, loserId);
+
+      // Logros: mismo trato que el flujo normal de doble confirmación.
+      await this.achievements.evaluateAfterChallenge({
+        winnerId,
+        loserId,
+        score,
+        oldWinnerPosition,
+        oldLoserPosition,
+      });
+
+      // Liberar la reserva del desafío (igual que processDoubleConfirmation)
+      await this.prisma.reservation.updateMany({
+        where: { challenge_id: challengeId, status: 'active' },
+        data: {
+          status: 'cancelled',
+          cancelled_at: new Date(),
+          cancel_reason: 'Partido completado',
+        },
+      });
+
+      // Relectura para tener las posiciones ya corridas (el estado lo fijó el claim).
+      updated = await this.loadWithPlayers(challengeId);
+      if (!updated) throw new NotFoundException('Desafío no encontrado');
+    } catch (error) {
+      console.error('❌ Error resolviendo desafío desde admin:', error);
+      // Soltar el claim, igual que processDoubleConfirmation: si no, el desafío
+      // quedaba "completado" sin estadísticas, y el reintento caía en "ya
+      // completado, solo corrijo el marcador" — nunca se aplicaban. Solo se
+      // revierte si sigue siendo el estado que dejó este claim.
+      await this.prisma.challenge
+        .updateMany({
+          where: { id: challengeId, status: 'completed', winner_id: winnerId },
+          data: {
+            status: challenge.status,
+            winner_id: challenge.winner_id ?? null,
+            final_score: challenge.final_score ?? null,
+            played_at: challenge.played_at ?? null,
+            resolved_at: challenge.resolved_at ?? null,
+          },
+        })
+        .catch((e) => console.error('⚠️ Error soltando el claim:', e));
+      throw error;
+    }
 
     const winnerName =
       winnerId === updated.challenger_id
