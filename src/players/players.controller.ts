@@ -40,6 +40,12 @@ export class PlayersController {
     });
   }
 
+  /** Últimos partidos jugados: los muestra la ficha del jugador. */
+  @Get(':id/recent-matches')
+  getRecentMatches(@Param('id') id: string) {
+    return this.playersService.recentMatches(id);
+  }
+
   @Get(':id/available-challenges')
   getAvailableChallenges(@Param('id') id: string) {
     return this.playersService.getAvailableChallenges(id);
