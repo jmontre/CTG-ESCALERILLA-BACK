@@ -8,6 +8,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChallengeRulesService } from '../challenges/challenge-rules.service';
 import { uploadAvatar, deleteAvatar } from './cloudinary.service';
+import { scoreForPlayer } from '../common/score-perspective';
 import * as bcrypt from 'bcryptjs';
 
 // Allowlist de campos para GET /players/:id.
@@ -168,6 +169,56 @@ export class PlayersService {
       );
 
     return { ...player, is_admin: player.user?.is_admin || false };
+  }
+
+  /**
+   * Últimos partidos jugados, para la ficha que se abre desde la escalerilla.
+   * Es público (lo ve cualquier socio), así que del rival solo salen nombre y
+   * puesto — nada de datos de contacto.
+   */
+  async recentMatches(id: string, take = 5) {
+    const matches = await this.prisma.challenge.findMany({
+      where: {
+        status: 'completed',
+        winner_id: { not: null },
+        OR: [{ challenger_id: id }, { challenged_id: id }],
+      },
+      // Los partidos viejos pueden no tener `played_at`; van al final, no
+      // primeros (en Postgres un DESC deja los nulos arriba por defecto).
+      orderBy: [
+        { played_at: { sort: 'desc', nulls: 'last' } },
+        { resolved_at: 'desc' },
+      ],
+      take,
+      select: {
+        id: true,
+        type: true,
+        winner_id: true,
+        challenger_id: true,
+        final_score: true,
+        played_at: true,
+        resolved_at: true,
+        challenger: { select: { id: true, name: true, position: true } },
+        challenged: { select: { id: true, name: true, position: true } },
+      },
+    });
+
+    return matches.map((m) => {
+      const esDesafiante = m.challenger_id === id;
+      const rival = esDesafiante ? m.challenged : m.challenger;
+      return {
+        id: m.id,
+        won: m.winner_id === id,
+        rival,
+        // El marcador se muestra desde este jugador: su resultado primero.
+        score: scoreForPlayer(m.final_score, {
+          playerWon: m.winner_id === id,
+          playerIsChallenger: esDesafiante,
+        }),
+        played_at: m.played_at ?? m.resolved_at,
+        type: m.type,
+      };
+    });
   }
 
   async getAvailableChallenges(id: string) {
