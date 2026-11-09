@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   Req,
+  BadRequestException,
 } from '@nestjs/common';
 import { MasterService } from './master.service';
 import { ReplacePlayoffPlayerDto } from './dto/replace-playoff-player.dto';
@@ -50,8 +51,17 @@ export class MasterController {
       round_robin_start?: string;
       round_robin_end?: string;
       final_date?: string;
+      exclude_player_ids?: string[];
     },
   ) {
+    if (
+      body.exclude_player_ids !== undefined &&
+      (!Array.isArray(body.exclude_player_ids) ||
+        !body.exclude_player_ids.every((id) => typeof id === 'string'))
+    )
+      throw new BadRequestException(
+        'exclude_player_ids debe ser una lista de ids.',
+      );
     return this.masterService.generateMaster({
       ...body,
       category: body.category.toUpperCase(),
