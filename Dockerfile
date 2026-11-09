@@ -1,5 +1,7 @@
 FROM node:20-slim
 
+# git: whatsapp-web.js se instala desde un commit de GitHub (no hay versión
+# en npm que llegue a 'ready' con el WhatsApp Web de nov-2026).
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-liberation \
@@ -17,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     xdg-utils \
     openssl \
+    git \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
