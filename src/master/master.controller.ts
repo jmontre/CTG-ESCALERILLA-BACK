@@ -10,6 +10,7 @@ import {
   Req,
 } from '@nestjs/common';
 import { MasterService } from './master.service';
+import { ReplacePlayoffPlayerDto } from './dto/replace-playoff-player.dto';
 import { Admin } from '../auth/admin.decorator';
 
 @Controller('master')
@@ -98,6 +99,23 @@ export class MasterController {
     @Body() body: { winner_id: string; score: string },
   ) {
     return this.masterService.submitResult(id, body.winner_id, body.score);
+  }
+
+  /**
+   * PATCH /master/matches/:id/replace-player
+   * Reemplazar a un jugador del playoff que no puede jugar (admin)
+   */
+  @Admin()
+  @Patch('matches/:id/replace-player')
+  replacePlayer(
+    @Param('id') id: string,
+    @Body() body: ReplacePlayoffPlayerDto,
+  ) {
+    return this.masterService.replacePlayoffPlayer(
+      id,
+      body.old_player_id,
+      body.new_player_id,
+    );
   }
 
   @Admin()

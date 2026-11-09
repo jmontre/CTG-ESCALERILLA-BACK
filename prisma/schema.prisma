@@ -158,6 +158,11 @@ model MasterSeason {
   round_robin_start DateTime?
   round_robin_end   DateTime?
   final_date        DateTime?
+  /// Los 12 que entraron al cuadro, en el orden de la escalerilla al generarlo
+  /// (0-3 directos, 4-11 playoff). Los grupos se arman con este orden y no con
+  /// la posición del momento: un desafío jugado durante el playoff no puede
+  /// cambiar quiénes son los clasificados directos ya anunciados.
+  seed_player_ids   String[]  @default([])
   created_at        DateTime  @default(now())
 
   season  Season?       @relation(fields: [season_id], references: [id])
