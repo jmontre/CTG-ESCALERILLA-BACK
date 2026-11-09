@@ -22,6 +22,13 @@ const DIRECT_QUALIFIERS = 4;
 const PLAYOFF_SLOTS = 8; // puestos 5 al 12
 const MIN_PLAYERS = DIRECT_QUALIFIERS + PLAYOFF_SLOTS; // 12
 
+/**
+ * Rondas sin grupo: se devuelven en `masterSeason.matches`. El playoff faltaba
+ * acá y la página del Master no tenía cómo mostrarlo (ni agendarlo, ni cargar
+ * su resultado) aunque el cuadro estuviera generado.
+ */
+export const ROUNDS_OUTSIDE_GROUPS = ['playoff', 'semifinal', 'final'] as const;
+
 /** Rango de posiciones de la categoría, acotado a los 14 cupos del Master. */
 function masterRange(category: string): [number, number] | null {
   const bounds = categoryBounds(category);
@@ -170,9 +177,10 @@ export class MasterService {
             },
           },
         },
-        // Semifinal/final no tienen group_id, así que no aparecen en groups.matches
+        // Playoff, semifinal y final no tienen group_id, así que no aparecen en
+        // groups.matches: van en la lista del cuadro.
         matches: {
-          where: { round: { in: ['semifinal', 'final'] } },
+          where: { round: { in: [...ROUNDS_OUTSIDE_GROUPS] } },
           include: {
             player1: { select: MASTER_PUBLIC_PLAYER_SELECT },
             player2: { select: MASTER_PUBLIC_PLAYER_SELECT },
@@ -208,9 +216,10 @@ export class MasterService {
             },
           },
         },
-        // Semifinal/final no tienen group_id, así que no aparecen en groups.matches
+        // Playoff, semifinal y final no tienen group_id, así que no aparecen en
+        // groups.matches: van en la lista del cuadro.
         matches: {
-          where: { round: { in: ['semifinal', 'final'] } },
+          where: { round: { in: [...ROUNDS_OUTSIDE_GROUPS] } },
           include: {
             player1: { select: MASTER_PUBLIC_PLAYER_SELECT },
             player2: { select: MASTER_PUBLIC_PLAYER_SELECT },
@@ -280,6 +289,9 @@ export class MasterService {
         season_id: ladderSeason.id,
         category: data.category,
         status: 'playoffs',
+        seed_player_ids: players
+          .slice(0, DIRECT_QUALIFIERS + PLAYOFF_SLOTS)
+          .map((p) => p.id),
         round_robin_start: data.round_robin_start
           ? new Date(data.round_robin_start)
           : null,
@@ -846,22 +858,12 @@ export class MasterService {
     });
     if (existingGroup) return;
 
-    const range = masterRange(season.category);
-    if (!range) return;
-
-    const direct = await this.prisma.player.findMany({
-      where: { position: { gte: range[0], lte: range[1] } },
-      orderBy: { position: 'asc' },
-      take: DIRECT_QUALIFIERS,
-    });
     const winners = playoffs
       .map((m) => m.winner)
       .filter((w): w is NonNullable<typeof w> => !!w);
 
-    // Los 8 ordenados por su puesto en la escalerilla, y repartidos por paridad.
-    const qualified = [...direct, ...winners].sort(
-      (a, b) => (a.position ?? 9999) - (b.position ?? 9999),
-    );
+    const qualified = await this.qualifiedForGroups(season, winners);
+    if (!qualified) return;
     const grupoA = qualified.filter((_, i) => i % 2 === 0);
     const grupoB = qualified.filter((_, i) => i % 2 === 1);
 
@@ -924,6 +926,174 @@ export class MasterService {
           `*Grupo A:*\n  • ${grupoANames}\n\n` +
           `*Grupo B:*\n  • ${grupoBNames}`,
       );
+    });
+  }
+
+  /**
+   * Los 8 del round robin, en orden de sembrado (de ahí sale la paridad de
+   * grupos). Con sembrado guardado: los 4 directos de la generación y los
+   * ganadores según su puesto al generar. Cuadros anteriores a guardar el
+   * sembrado: se recalcula con la posición actual, como antes.
+   */
+  private async qualifiedForGroups<
+    W extends { id: string; position: number | null },
+  >(season: { category: string; seed_player_ids: string[] }, winners: W[]) {
+    const seeds = season.seed_player_ids ?? [];
+    if (seeds.length >= DIRECT_QUALIFIERS) {
+      const directIds = seeds.slice(0, DIRECT_QUALIFIERS);
+      const direct = await this.prisma.player.findMany({
+        where: { id: { in: directIds } },
+      });
+      const seedOf = (id: string) => {
+        const i = seeds.indexOf(id);
+        return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+      };
+      return [...direct, ...winners].sort(
+        (a, b) => seedOf(a.id) - seedOf(b.id),
+      );
+    }
+
+    const range = masterRange(season.category);
+    if (!range) return null;
+    const direct = await this.prisma.player.findMany({
+      where: { position: { gte: range[0], lte: range[1] } },
+      orderBy: { position: 'asc' },
+      take: DIRECT_QUALIFIERS,
+    });
+    return [...direct, ...winners].sort(
+      (a, b) => (a.position ?? 9999) - (b.position ?? 9999),
+    );
+  }
+
+  /**
+   * Reemplaza a un jugador de un partido de playoff que todavía no se juega
+   * (admin). Es lo que hace la comisión cuando alguien avisa que no puede
+   * jugar: el reemplazante hereda su lugar en el sembrado. Si la cancha la
+   * había reservado quien sale, la reserva se cancela y la fecha se libera; si
+   * la reservó el rival, se mantiene con el nombre nuevo.
+   */
+  async replacePlayoffPlayer(
+    matchId: string,
+    oldPlayerId: string,
+    newPlayerId: string,
+  ) {
+    const match = await this.prisma.masterMatch.findUnique({
+      where: { id: matchId },
+      include: { season: true, player1: true, player2: true },
+    });
+    if (!match) throw new NotFoundException('Partido no encontrado');
+    if (match.round !== 'playoff')
+      throw new BadRequestException(
+        'Solo se pueden reemplazar jugadores del playoff.',
+      );
+    if (match.status !== 'pending')
+      throw new BadRequestException(
+        'El partido ya tiene resultado o está en disputa: no se puede reemplazar.',
+      );
+    if (match.player1_result !== null || match.player2_result !== null)
+      throw new BadRequestException(
+        'Ya hay un resultado ingresado en este partido: no se puede reemplazar.',
+      );
+    if (oldPlayerId !== match.player1_id && oldPlayerId !== match.player2_id)
+      throw new BadRequestException(
+        'El jugador a reemplazar no juega este partido.',
+      );
+
+    const newPlayer = await this.prisma.player.findUnique({
+      where: { id: newPlayerId },
+    });
+    if (!newPlayer || newPlayer.deactivated_at)
+      throw new BadRequestException('Jugador reemplazante no encontrado.');
+
+    // No puede estar ya en algún cuadro Master de esta temporada.
+    const alreadyIn = await this.prisma.masterMatch.findFirst({
+      where: {
+        season: { season_id: match.season.season_id },
+        OR: [{ player1_id: newPlayerId }, { player2_id: newPlayerId }],
+      },
+    });
+    const seeded = await this.prisma.masterSeason.findFirst({
+      where: {
+        season_id: match.season.season_id,
+        seed_player_ids: { has: newPlayerId },
+      },
+    });
+    if (alreadyIn || seeded)
+      throw new BadRequestException(
+        `${newPlayer.name} ya está en el Master de esta temporada.`,
+      );
+
+    const isP1 = oldPlayerId === match.player1_id;
+    const outgoing = isP1 ? match.player1 : match.player2;
+    const rival = isP1 ? match.player2 : match.player1;
+
+    const reservation = await this.prisma.reservation.findFirst({
+      where: { master_match_id: matchId, status: 'active' },
+    });
+    const bookedByOutgoing = reservation?.player_id === oldPlayerId;
+
+    const seeds = match.season.seed_player_ids.map((id) =>
+      id === oldPlayerId ? newPlayerId : id,
+    );
+
+    await this.prisma.$transaction([
+      this.prisma.masterMatch.update({
+        where: { id: matchId },
+        data: {
+          ...(isP1 ? { player1_id: newPlayerId } : { player2_id: newPlayerId }),
+          ...(bookedByOutgoing ? { scheduled_date: null } : {}),
+        },
+      }),
+      this.prisma.masterSeason.update({
+        where: { id: match.season_id },
+        data: { seed_player_ids: seeds },
+      }),
+      ...(reservation
+        ? [
+            bookedByOutgoing
+              ? this.prisma.reservation.update({
+                  where: { id: reservation.id },
+                  data: {
+                    status: 'cancelled',
+                    cancelled_at: new Date(),
+                    cancel_reason: 'Cambio de jugador en el playoff',
+                  },
+                })
+              : this.prisma.reservation.update({
+                  where: { id: reservation.id },
+                  data: { partner_name: newPlayer.name },
+                }),
+          ]
+        : []),
+    ]);
+
+    this.notifyAsync(async () => {
+      await this.sendWsp(
+        newPlayer.phone,
+        `🏆 *Master CTG — Categoría ${match.season.category}*\n\n` +
+          `Entras al PLAYOFF en reemplazo de ${outgoing.name}.\n\n` +
+          `⚔️ Tu rival: *${rival.name}*\n\n` +
+          `Coordina la fecha e ingresa el resultado en la app.`,
+      );
+      await this.sleep(500);
+      await this.sendWsp(
+        rival.phone,
+        `🏆 *Master CTG — Categoría ${match.season.category}*\n\n` +
+          `Cambio de rival en el playoff: ${outgoing.name} no puede jugar.\n\n` +
+          `⚔️ Tu nuevo rival: *${newPlayer.name}*` +
+          (bookedByOutgoing
+            ? `\n\nLa reserva de cancha se canceló: hay que volver a agendar.`
+            : ''),
+      );
+    });
+
+    return this.prisma.masterMatch.findUnique({
+      where: { id: matchId },
+      include: {
+        player1: { select: MASTER_PUBLIC_PLAYER_SELECT },
+        player2: { select: MASTER_PUBLIC_PLAYER_SELECT },
+        winner: { select: MASTER_PUBLIC_PLAYER_SELECT },
+      },
     });
   }
 

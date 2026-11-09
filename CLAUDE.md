@@ -75,7 +75,7 @@ AppModule
 | `/admin/players` | CRUD jugadores, move, **reorder**, **retire/rejoin**, reset-immunity/vulnerability, weekly-usage | `DELETE` da de baja: anonimiza |
 | `/challenges` | create, accept, reject, result, schedule, history, **entry** + **entry/targets** | |
 | `/admin/challenges` | resolve, cancel, force delete, extend deadline, **entry-limit** (GET/POST) | |
-| `/master` | `GET /?season=`, `GET /seasons`, `GET /:cat?season=`, generate, schedule, player-result, result (admin), check-final | todo lo público va por temporada |
+| `/master` | `GET /?season=`, `GET /seasons`, `GET /:cat?season=`, generate, schedule, player-result, result (admin), replace-player (admin), check-final | todo lo público va por temporada |
 | `/seasons` | periods, me/summary, `:slug`/standings, **next**, open, `:slug`/close, **rollover** (admin) | |
 | `/reservations` | availability, courts, season, blocks, stats, light-config/summary, my, CRUD | |
 | `/cron` | `POST /cron/run` (trigger manual) | |
@@ -266,7 +266,13 @@ Los rangos de categoría salen de `common/ladder.ts` según el `category_scheme`
 
 **Cada cuadro pertenece a una temporada** (`master_seasons.season_id`). `generateMaster` lo engancha con la temporada abierta y deriva el nombre de ella: antes el nombre se escribía a mano y el cierre no encontraba los cuadros. Los endpoints públicos responden siempre por temporada — sin `?season=` responden la abierta, que puede no tener cuadro todavía (y ahí la página avisa "aún no disponible" en vez de mostrar el del semestre pasado, que era el bug de septiembre 2026).
 
-Flujo automático: round robin → semifinales (al completar todos los partidos de grupo; cruces 1A-2B / 1B-2A) → final (al completar ambas semis). Estados de season: `pending → active → semifinals → final → completed`.
+**Sembrado congelado** (`master_seasons.seed_player_ids`): al generar se guardan los 12 del cuadro en orden (0-3 directos, 4-11 playoff). Los grupos se arman con ese orden, no con la posición del momento: si durante la semana del playoff alguien gana un desafío y sube al top 4, no le quita el cupo a un directo ya anunciado. Cuadros previos (lista vacía) usan la posición actual, como antes.
+
+**Reemplazo en el playoff** (`PATCH /master/matches/:id/replace-player`, admin): cuando un jugador avisa que no puede jugar, la comisión pone a otro. Solo en partidos de playoff `pending` sin resultado reportado, y el reemplazante no puede estar en ningún cuadro de la temporada. Hereda el lugar del que sale en el sembrado. Si la reserva la había hecho quien sale, se cancela y se libera la fecha; si la hizo el rival, se mantiene con el nombre nuevo.
+
+**Respuesta pública**: playoff, semifinal y final van en `masterSeason.matches` (`ROUNDS_OUTSIDE_GROUPS`); los de grupo en `groups[].matches`. El playoff faltaba ahí y la página no podía mostrarlo.
+
+Flujo automático: playoff → round robin (al completarse los 4 playoffs) → semifinales (al completar todos los partidos de grupo; cruces 1A-2B / 1B-2A) → final (al completar ambas semis). Estados de season: `playoffs → active → semifinals → final → completed`.
 
 **Doble confirmación de resultados**: `submitPlayerResult` (jugador) guarda en `master_matches.player1_result`/`player2_result` (Json). Si ambos coinciden → procesa; si difieren → `disputed`; el admin resuelve con `POST /master/matches/:id/result`. (Estos campos y la migración correspondiente existen desde el saneamiento de junio 2026 — antes el flujo de jugador estaba roto.)
 
@@ -313,6 +319,7 @@ El drift histórico fue saneado en junio 2026. **Todas las migraciones están ve
 - `20260611100000_sync_schema_drift`: migración **idempotente** que registra todo lo creado históricamente con `db push` (tablas `courts`, `reservations`, `system_config`, `court_blocks`, las 4 del Master; columnas `extra_high_demand_slots`, `school_names`, `partner_name`, `is_challenge`, etc.). En una DB existente es no-op (guardas `IF NOT EXISTS` / `DO ... EXCEPTION WHEN duplicate_object`).
 - `20260611100002_add_performance_indexes`: índices de consulta + el único índice schema-vs-DB que **no** está en `schema.prisma`.
 - `20260905120000_master_por_temporada_y_partido_ingreso`: `master_seasons.season_id` (con backfill de los cuadros históricos a `2026-1`), `challenges.type` y `players.entry_match_available`. Idempotente.
+- `20261109120000_master_seed_player_ids`: `master_seasons.seed_player_ids` (sembrado congelado del Master). Idempotente.
 
 **Única excepción schema ↔ DB**: el índice único PARCIAL `reservations_active_slot_uniq` (`court_id, date, time_slot` WHERE `status = 'active'`) — Prisma no soporta índices parciales, así que vive solo en SQL. `migrate dev` lo reportará como drift esperado; **no eliminarlo**. Es la protección anti doble-booking: el código captura su violación (Prisma `P2002`) y la traduce a `BadRequestException`. Pre-deploy: si pudieran existir duplicados activos, verificar antes (comentario en la migración).
 

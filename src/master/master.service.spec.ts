@@ -163,3 +163,37 @@ describe('MasterService.findAll', () => {
     );
   });
 });
+
+describe('MasterService — partidos fuera de grupo en la respuesta pública', () => {
+  function build() {
+    const prisma: any = {
+      season: {
+        findFirst: jest.fn().mockResolvedValue({ id: 's1', status: 'active' }),
+        findUnique: jest.fn().mockResolvedValue({ id: 's1' }),
+      },
+      masterSeason: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    return { service: new MasterService(prisma), prisma };
+  }
+
+  it('findByCategory incluye el playoff junto a semifinal y final', async () => {
+    const { service, prisma } = build();
+    await service.findByCategory('A');
+    const rounds =
+      prisma.masterSeason.findFirst.mock.calls[0][0].include.matches.where.round
+        .in;
+    expect(rounds).toEqual(['playoff', 'semifinal', 'final']);
+  });
+
+  it('findAll incluye el playoff junto a semifinal y final', async () => {
+    const { service, prisma } = build();
+    await service.findAll();
+    const rounds =
+      prisma.masterSeason.findMany.mock.calls[0][0].include.matches.where.round
+        .in;
+    expect(rounds).toEqual(['playoff', 'semifinal', 'final']);
+  });
+});
