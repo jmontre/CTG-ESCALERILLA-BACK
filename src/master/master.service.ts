@@ -89,8 +89,11 @@ export class MasterService {
   private async sendWsp(phone: string | null | undefined, message: string) {
     if (!phone) return;
     try {
-      await whatsappService.sendMessage(phone, message);
-      console.log(`📱 WhatsApp enviado a ${phone}`);
+      // sendMessage devuelve false (no lanza) si WhatsApp no está listo: antes
+      // se registraba "enviado" igual y parecía que los avisos salían.
+      const sent = await whatsappService.sendMessage(phone, message);
+      if (sent) console.log(`📱 WhatsApp enviado a ${phone}`);
+      else console.log(`📱 [NO ENVIADO → ${phone}]\n${message}`);
     } catch {
       console.log(`📱 [LOG WSP → ${phone}]\n${message}`);
     }

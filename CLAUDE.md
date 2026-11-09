@@ -381,6 +381,8 @@ Trigger manual: `POST /cron/run` (ejecuta los dos primeros).
 
 ⚠️ **whatsapp-web.js se rompe cuando WhatsApp cambia su web, sin error visible.** El síntoma es `✅ Autenticado correctamente` (a veces 3 veces) y nunca `✅ WhatsApp conectado! 🎉`. La causa: tras autenticar, la librería inyecta sus módulos *dentro* de la página de Chromium (`exposeFunction`), así que si falla, el error vuelve a la página y no a Node. Mientras tanto **los mensajes se pierden**: `sendMessage`/`sendGroupMessage` devuelven `false` si no está `ready`, no hacen cola.
 - Pasó en sep-2026: la 1.34.6 dejó de funcionar con WhatsApp Web `2.3000.1047523314` (no existe `window.Store`); la 1.34.7 lo arregló (usa `window.require`). Reescanear el QR **no** lo arregla.
+- Pasó de nuevo el 9-nov-2026 con la 1.34.7 (autentica, nunca `ready`). Sin versión nueva en npm, se fijó la librería al commit `064a3d5` de `main` de wwebjs (incluye el ajuste a `id._serialized` → `id.$1`), instalada por `git+https` — por eso el Dockerfile instala `git`. Volver a una versión de npm en cuanto salga una que funcione.
+- Si WhatsApp pide vincular de nuevo, el log imprime el texto del QR para pegarlo en https://qr.io y escanearlo con el teléfono del club.
 - Para diagnosticar, el servicio registra los errores de la página (`🧩`) y, si no llega a `ready` en 90 s (`WHATSAPP_READY_WATCHDOG_MS`), vuelca versión de WhatsApp Web, de Chromium y qué piezas internas existen (`🩺`). Al conectar deja la versión que funciona (`📦`).
 - Antes de desplegar otra versión de la librería: `npx ts-node scripts/probar-whatsapp.ts`, escaneando con un WhatsApp **personal** (no el del club). Dice si llega a `ready` sin tocar producción.
 
