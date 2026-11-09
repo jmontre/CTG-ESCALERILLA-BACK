@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { MasterService } from './master.service';
+import { MasterService, formatMasterDay } from './master.service';
 
 jest.mock('../notifications/whatsapp.service', () => ({
   whatsappService: {
@@ -267,5 +267,127 @@ describe('MasterService.replacePlayoffPlayer', () => {
     await expect(
       service.replacePlayoffPlayer('m1', 'p7', 'p13'),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('MasterService.generateMaster — jugadores que no juegan', () => {
+  // Categoría C de producción al 9-nov-2026 (puestos 29 a 46).
+  const C = [
+    [29, 'Javier Montre'],
+    [30, 'Gonzalo Carbacho'],
+    [31, 'Cristobal Prado'],
+    [32, 'Cristián González'],
+    [33, 'Bastian Becerra'],
+    [34, 'Gerardo Pérez'],
+    [35, 'Daniel Muñoz'],
+    [36, 'Gustavo Díaz'],
+    [37, 'Daniel Soto Jr'],
+    [38, 'Giancarlo Stipo'],
+    [39, 'Nicolas Baeza'],
+    [40, 'Marianno Stipo'],
+    [41, 'JP Urtubia'],
+    [42, 'Vicente Tobar'],
+    [43, 'Joaquín Quezada'],
+    [44, 'Carlos Guzmán'],
+    [45, 'Maximiliano Gonzalez'],
+    [46, 'Diego Fuenzalida'],
+    [1001, 'Administrador'],
+  ].map(([pos, name]) => player(String(name), Number(pos), String(name)));
+
+  /** findMany en memoria que entiende los filtros que usa generateMaster. */
+  function findMany({ where, take }: any) {
+    let out = C.filter((p) => {
+      const r = where.position ?? {};
+      if (r.gte !== undefined && p.position! < r.gte) return false;
+      if (r.lte !== undefined && p.position! > r.lte) return false;
+      if (r.lt !== undefined && p.position! >= r.lt) return false;
+      if (where.id?.in && !where.id.in.includes(p.id)) return false;
+      if (where.id?.notIn && where.id.notIn.includes(p.id)) return false;
+      return true;
+    }).sort((a, b) => a.position! - b.position!);
+    if (take) out = out.slice(0, take);
+    return Promise.resolve(out);
+  }
+
+  function build() {
+    const prisma: any = {
+      season: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 's1', name: '2026-2', status: 'active' }),
+      },
+      masterSeason: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'ms1' }),
+      },
+      player: { findMany: jest.fn(findMany) },
+      masterMatch: { create: jest.fn() },
+    };
+    return { service: new MasterService(prisma), prisma };
+  }
+
+  it('sin excluidos, la C se arma del 29° al 40°', async () => {
+    const { service, prisma } = build();
+    await service.generateMaster({ category: 'C' });
+    const seeds = prisma.masterSeason.create.mock.calls[0][0].data
+      .seed_player_ids as string[];
+    expect(seeds[0]).toBe('Javier Montre');
+    expect(seeds[11]).toBe('Marianno Stipo');
+  });
+
+  it('con los que no juegan excluidos sale exactamente el cuadro del PDF', async () => {
+    const { service, prisma } = build();
+    await service.generateMaster({
+      category: 'C',
+      exclude_player_ids: [
+        'Javier Montre',
+        'Cristián González',
+        'Bastian Becerra',
+        'Nicolas Baeza',
+      ],
+    });
+    const seeds = prisma.masterSeason.create.mock.calls[0][0].data
+      .seed_player_ids as string[];
+    expect(seeds.slice(0, 4)).toEqual([
+      'Gonzalo Carbacho',
+      'Cristobal Prado',
+      'Gerardo Pérez',
+      'Daniel Muñoz',
+    ]);
+    const pairs = prisma.masterMatch.create.mock.calls.map((c: any) => [
+      c[0].data.player1_id,
+      c[0].data.player2_id,
+    ]);
+    expect(pairs).toEqual([
+      ['Gustavo Díaz', 'Carlos Guzmán'],
+      ['Daniel Soto Jr', 'Joaquín Quezada'],
+      ['Giancarlo Stipo', 'Vicente Tobar'],
+      ['Marianno Stipo', 'JP Urtubia'],
+    ]);
+    expect(seeds).not.toContain('Administrador');
+  });
+
+  it('rechaza excluir a alguien de otra categoría', async () => {
+    const { service, prisma } = build();
+    await expect(
+      service.generateMaster({
+        category: 'C',
+        exclude_player_ids: ['Javier Montre', 'alguien-de-la-A'],
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.masterSeason.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('formatMasterDay', () => {
+  const tz = process.env.TZ;
+  afterAll(() => {
+    process.env.TZ = tz;
+  });
+
+  it('no corre el día en hora de Chile', () => {
+    process.env.TZ = 'America/Santiago';
+    expect(formatMasterDay('2026-12-19', true)).toBe('sábado, 19 de diciembre');
+    expect(formatMasterDay('2026-11-16')).toBe('16-11-2026');
   });
 });
