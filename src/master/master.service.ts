@@ -22,6 +22,13 @@ const DIRECT_QUALIFIERS = 4;
 const PLAYOFF_SLOTS = 8; // puestos 5 al 12
 const MIN_PLAYERS = DIRECT_QUALIFIERS + PLAYOFF_SLOTS; // 12
 
+/**
+ * Rondas sin grupo: se devuelven en `masterSeason.matches`. El playoff faltaba
+ * acá y la página del Master no tenía cómo mostrarlo (ni agendarlo, ni cargar
+ * su resultado) aunque el cuadro estuviera generado.
+ */
+export const ROUNDS_OUTSIDE_GROUPS = ['playoff', 'semifinal', 'final'] as const;
+
 /** Rango de posiciones de la categoría, acotado a los 14 cupos del Master. */
 function masterRange(category: string): [number, number] | null {
   const bounds = categoryBounds(category);
@@ -170,9 +177,10 @@ export class MasterService {
             },
           },
         },
-        // Semifinal/final no tienen group_id, así que no aparecen en groups.matches
+        // Playoff, semifinal y final no tienen group_id, así que no aparecen en
+        // groups.matches: van en la lista del cuadro.
         matches: {
-          where: { round: { in: ['semifinal', 'final'] } },
+          where: { round: { in: [...ROUNDS_OUTSIDE_GROUPS] } },
           include: {
             player1: { select: MASTER_PUBLIC_PLAYER_SELECT },
             player2: { select: MASTER_PUBLIC_PLAYER_SELECT },
@@ -208,9 +216,10 @@ export class MasterService {
             },
           },
         },
-        // Semifinal/final no tienen group_id, así que no aparecen en groups.matches
+        // Playoff, semifinal y final no tienen group_id, así que no aparecen en
+        // groups.matches: van en la lista del cuadro.
         matches: {
-          where: { round: { in: ['semifinal', 'final'] } },
+          where: { round: { in: [...ROUNDS_OUTSIDE_GROUPS] } },
           include: {
             player1: { select: MASTER_PUBLIC_PLAYER_SELECT },
             player2: { select: MASTER_PUBLIC_PLAYER_SELECT },
