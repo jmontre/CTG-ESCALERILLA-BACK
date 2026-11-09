@@ -29,6 +29,20 @@ const MIN_PLAYERS = DIRECT_QUALIFIERS + PLAYOFF_SLOTS; // 12
  */
 export const ROUNDS_OUTSIDE_GROUPS = ['playoff', 'semifinal', 'final'] as const;
 
+/**
+ * Fecha del cuadro para los mensajes. Las fechas del Master son días que se
+ * guardan a medianoche UTC: formateadas en la zona del servidor (Chile) salían
+ * un día antes ("Final: viernes 18" para el sábado 19).
+ */
+export function formatMasterDay(date: string | Date, long = false): string {
+  return new Date(date).toLocaleDateString(
+    'es-CL',
+    long
+      ? { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }
+      : { timeZone: 'UTC' },
+  );
+}
+
 /** Rango de posiciones de la categoría, acotado a los 14 cupos del Master. */
 function masterRange(category: string): [number, number] | null {
   const bounds = categoryBounds(category);
@@ -237,9 +251,12 @@ export class MasterService {
     round_robin_start?: string;
     round_robin_end?: string;
     final_date?: string;
+    /** Jugadores de la categoría que no juegan este Master (avisaron, no
+     *  están, etc.). Se saltan y el cuadro se arma con los siguientes. */
+    exclude_player_ids?: string[];
   }) {
-    const range = masterRange(data.category);
-    if (!range)
+    const bounds = categoryBounds(data.category);
+    if (!bounds)
       throw new BadRequestException('Categoría inválida. Usa A, B o C.');
 
     // El cuadro pertenece a la temporada abierta. Sin temporada abierta no hay
@@ -263,8 +280,31 @@ export class MasterService {
           `Elimínalo antes de volver a generarlo.`,
       );
 
+    // Rango de la categoría. La última no tiene tope: con jugadores
+    // excluidos, el cuadro tiene que poder tomar a los que siguen (en 2026-2
+    // la C entró hasta el 44°). Los admins viven en el puesto ≥ 1000.
+    const positionRange = {
+      gte: bounds.from,
+      ...(bounds.to === null ? { lt: 1000 } : { lte: bounds.to }),
+    };
+
+    const exclude = [...new Set(data.exclude_player_ids ?? [])];
+    if (exclude.length > 0) {
+      const found = await this.prisma.player.findMany({
+        where: { id: { in: exclude }, position: positionRange },
+        select: { id: true },
+      });
+      if (found.length !== exclude.length)
+        throw new BadRequestException(
+          `Algún jugador excluido no está en la Categoría ${data.category}.`,
+        );
+    }
+
     const players = await this.prisma.player.findMany({
-      where: { position: { gte: range[0], lte: range[1] } },
+      where: {
+        position: positionRange,
+        ...(exclude.length > 0 ? { id: { notIn: exclude } } : {}),
+      },
       orderBy: { position: 'asc' },
       take: MASTER_SLOTS,
     });
@@ -371,8 +411,8 @@ export class MasterService {
         `🏆 *Master CTG — Categoría ${data.category} generado*\n\n` +
           `*Clasificados directos:*\n  • ${directNames}\n\n` +
           `*Playoff por los 4 cupos restantes:*\n${playoffLines}\n\n` +
-          `📅 Round Robin: ${data.round_robin_start ? new Date(data.round_robin_start).toLocaleDateString('es-CL') : '?'} al ${data.round_robin_end ? new Date(data.round_robin_end).toLocaleDateString('es-CL') : '?'}\n` +
-          `🎾 Final: ${data.final_date ? new Date(data.final_date).toLocaleDateString('es-CL', { weekday: 'long', day: 'numeric', month: 'long' }) : '?'}`,
+          `📅 Round Robin: ${data.round_robin_start ? formatMasterDay(data.round_robin_start) : '?'} al ${data.round_robin_end ? formatMasterDay(data.round_robin_end) : '?'}\n` +
+          `🎾 Final: ${data.final_date ? formatMasterDay(data.final_date, true) : '?'}`,
       );
     });
 
@@ -1216,11 +1256,7 @@ export class MasterService {
     });
 
     const finalDateStr = season?.final_date
-      ? new Date(season.final_date).toLocaleDateString('es-CL', {
-          weekday: 'long',
-          day: 'numeric',
-          month: 'long',
-        })
+      ? formatMasterDay(season.final_date, true)
       : 'Por confirmar';
 
     this.notifyAsync(async () => {
