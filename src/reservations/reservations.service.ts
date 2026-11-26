@@ -22,6 +22,35 @@ const HIGH_DEMAND_SLOTS: Record<string, string[]> = {
   invierno: ['09:30', '11:15', '16:30', '18:15'],
 };
 
+/** Duración de un turno (minutos). El cron completa la reserva al terminar. */
+const SLOT_DURATION_MIN = 90;
+
+/**
+ * Inicio del turno como Date "naive" (reloj chileno), comparable con
+ * `nowInChile()`. `date` es un campo @db.Date (medianoche UTC).
+ */
+function slotStart(date: Date, timeSlot: string): Date {
+  const datePart = date.toISOString().split('T')[0];
+  return new Date(`${datePart}T${timeSlot}:00`);
+}
+
+/** El turno ya empezó (está en juego o ya terminó). */
+function slotHasStarted(date: Date, timeSlot: string): boolean {
+  return slotStart(date, timeSlot).getTime() <= nowInChile().getTime();
+}
+
+/**
+ * El turno ya terminó (inicio + 90 min). El cron lo marca `completed` recién
+ * en su pasada horaria, así que una reserva puede seguir `active` hasta una
+ * hora después de terminar.
+ */
+function slotHasEnded(date: Date, timeSlot: string): boolean {
+  return (
+    slotStart(date, timeSlot).getTime() + SLOT_DURATION_MIN * 60 * 1000 <=
+    nowInChile().getTime()
+  );
+}
+
 const ALL_SLOTS = [
   '06:00',
   '07:45',
@@ -668,10 +697,18 @@ export class ReservationsService {
       );
 
     // Socios normales: solo 1 reserva activa. Profes: sin límite.
+    // Un turno que ya terminó no cuenta aunque el cron todavía no lo haya
+    // marcado `completed`: si contara, el socio que quiere su siguiente turno
+    // de baja demanda no podría reservar y terminaba usando "Modificar" sobre
+    // el turno recién jugado, borrándolo (y su cobro de visita) del registro.
     if (!isProfe) {
-      const activeReservation = await this.prisma.reservation.findFirst({
+      const activeReservations = await this.prisma.reservation.findMany({
         where: { player_id: player.id, status: 'active' },
+        select: { date: true, time_slot: true },
       });
+      const activeReservation = activeReservations.find(
+        (r) => !slotHasEnded(r.date, r.time_slot),
+      );
       if (activeReservation)
         throw new BadRequestException(
           'Ya tienes una reserva activa. Debes cancelarla antes de hacer una nueva.',
@@ -765,18 +802,18 @@ export class ReservationsService {
       throw new ForbiddenException('No puedes cancelar esta reserva.');
     if (reservation.status === 'cancelled')
       throw new BadRequestException('Esta reserva ya está cancelada.');
+    if (reservation.status !== 'active')
+      throw new BadRequestException('Esta reserva ya no se puede cancelar.');
 
-    const datePart = reservation.date.toISOString().split('T')[0];
-    const reservationDateTime = new Date(
-      `${datePart}T${reservation.time_slot}:00`,
-    );
     const hoursUntil =
-      (reservationDateTime.getTime() - nowInChile().getTime()) /
+      (slotStart(reservation.date, reservation.time_slot).getTime() -
+        nowInChile().getTime()) /
       (1000 * 60 * 60);
 
-    if (hoursUntil < 0) {
+    // Un turno ya iniciado solo lo puede anular un admin (DELETE /:id/admin).
+    if (hoursUntil <= 0) {
       throw new BadRequestException(
-        'No puedes cancelar una reserva que ya ocurrió.',
+        'No puedes cancelar una reserva cuyo turno ya comenzó. Si hubo un problema, contacta a un administrador.',
       );
     }
 
@@ -873,6 +910,14 @@ export class ReservationsService {
       throw new ForbiddenException('No puedes modificar esta reserva.');
     if (oldReservation.status === 'cancelled')
       throw new BadRequestException('Esta reserva ya está cancelada.');
+    if (oldReservation.status !== 'active')
+      throw new BadRequestException('Esta reserva ya no se puede modificar.');
+    // Un turno que ya empezó se está usando (o ya se usó): modificarlo lo
+    // cancelaba y se perdía el registro del turno jugado y el cobro de visita.
+    if (slotHasStarted(oldReservation.date, oldReservation.time_slot))
+      throw new BadRequestException(
+        'No puedes modificar una reserva cuyo turno ya comenzó.',
+      );
     if (oldReservation.is_challenge)
       throw new BadRequestException(
         'Las reservas de desafíos se modifican desde la sección de desafíos.',
@@ -893,6 +938,8 @@ export class ReservationsService {
     const dateChile = new Date(data.date + 'T00:00:00');
     if (dateChile < todayChile)
       throw new BadRequestException('No puedes reservar en fechas pasadas.');
+    if (slotHasStarted(reservationDate, data.time_slot))
+      throw new BadRequestException('Ese horario ya comenzó.');
 
     const court = await this.prisma.court.findUnique({
       where: { id: data.court_id },
